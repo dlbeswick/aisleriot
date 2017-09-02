@@ -14,7 +14,7 @@
 ; You should have received a copy of the GNU General Public License
 ; along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-(use-modules (aisleriot interface) (aisleriot api))
+(use-modules (aisleriot interface) (aisleriot api) (oop goops) (srfi srfi-1) (ice-9 format))
 
 (define deal-one #t)    ;deal one card at a time from stock to waste, 2 redeals
 (define deal-three #f)  ;deal three cards at a time from stock to waste
@@ -30,6 +30,112 @@
 (define foundation '(2 3 4 5))
 (define stock 0)
 (define waste 1)
+
+(define (report)
+  (let ((gs (make <game-state> #:tableau tableau #:foundation foundation #:waste waste)))
+	(display "\nALL CARDS\n")
+   
+	(let f ((slots (slots-all gs)))
+	  (unless (null? slots)
+		(format #t "Slot ~a: ~a\n" (car slots) (get-slot (car slots)))
+		(f (cdr slots))))
+   
+	(format #t "\nALL VALID MOVES\n ~a\n" (moves-valid gs))
+	))
+
+;;; Return alists of all permutations of the given lists.
+(define (permute . lists)
+  (cond ((null? lists) '())
+		((null? (cdr lists)) (car lists))
+		(else (let ((permutation
+					 (append-map (lambda (e0) (map (lambda (e1) (cons e0 e1)) (second lists))) (first lists))))
+				(apply permute (append (list permutation) (cddr lists))))))
+  )
+
+;;; A potential game move. It need not be valid.
+(define-class <move> (<object>)
+  (-id #:init-keyword #:id)
+  (-slot-source #:init-keyword #:slot-source #:getter slot-source-get)
+  (-slot-dest #:init-keyword #:slot-dest #:getter slot-dest-get)
+  (-slot-source-card-idx #:init-keyword #:slot-source-card-idx #:getter slot-source-card-idx-get)
+  )
+
+;;; Get the list of cards that would be picked up by the player for this move.
+;;; '() if no cards could be picked up.
+;;; Order is lowest to highest.
+(define-method (card-list-get (self <move>))
+  (let ((top-build (get-top-build (get-cards (slot-source-get self)) '())))
+	(if (>= (slot-source-card-idx-get self) (length top-build))
+		'()
+		(take (reverse top-build) (+ 1 (slot-source-card-idx-get self)))))
+  )
+
+;;; Card at source position and slot
+(define-method (card-source-get (self <move>))
+  (list-ref (get-cards (slot-source-get self)) (slot-source-card-idx-get self)))
+
+;;; True if move is valid
+(define-method (valid? (self <move>))
+  (and (is-visible? (card-source-get self))
+	   ;; Either in the tableau or in foundation and the source card is the top card.
+	   (or (member (slot-source-get self) tableau) (= (slot-source-card-idx-get self) 0))
+	   (not (empty-slot? (slot-source-get self)))
+	   (droppable? (slot-source-get self) (card-list-get self) (slot-dest-get self))
+	   )
+  )
+
+(define-method (display (self <move>) port)
+  (format port "#<<move> src: ~a-~a dst: ~a>"
+		  (slot-source-get self)
+		  (slot-source-card-idx-get self)
+		  (slot-dest-get self))
+  )
+
+;;; A node in the current game state tree
+(define-class <game-state> (<object>)
+  (-tableau #:init-keyword #:tableau)
+  (-foundation #:init-keyword #:foundation)
+  (-waste #:init-keyword #:waste)
+  (-move-id #:init-value 0))
+
+(define-method (move-add (self <game-state>) (move <move>))
+  (slot-set! move 'id (create-move-id self))
+  (slot-set! self
+			 'moves-valid
+			 (cons move (slot-ref self moves-valid))))
+
+(define-method (move-id-create (self <game-state>))
+  (let ((move-id (slot-ref self '-move-id)))
+	(slot-set! self '-move-id (+ move-id 1))
+	move-id))
+
+(define-method (slots-all (self <game-state>))
+  (append (slot-ref self '-tableau)
+		  (slot-ref self '-foundation)
+		  (list (slot-ref self '-waste))))
+
+;; All potential moves at this node.
+(define-method (moves-all (self <game-state>))
+  ;; Get alist of slots and indicies with cards ((slot . card-idx) (6 . 1) ... )
+  (let* ((slots-with-idxs
+		  (append-map (lambda (slot)
+				 (map (lambda (idx) (cons slot idx)) (iota (length (get-cards slot)))))
+			   (slots-all self)))
+		 ;; Get all combinations of moves among the slots and each card in the slots
+		 ;; (((slot-src . card-idx) . slot-dst) ((6 . 0) . 8) ... )
+		 (possible-moves
+		  (permute slots-with-idxs (slots-all self))))
+	;; Construct <move>s
+	(map
+	 (lambda (p) (make <move> #:slot-source (caar p) #:slot-source-card-idx (cdar p) #:slot-dest (cdr p)))
+	 possible-moves)
+	)
+  )
+ 
+;; All possible valid moves at this node.
+(define-method (moves-valid (self <game-state>))
+  (filter valid? (moves-all self)))
+
 
 (define (new-game)
   (initialize-playing-area)
@@ -250,6 +356,7 @@
           (any-slot-nonempty? (cdr slots)))))
 
 (define (get-hint)
+  (report)
   (or (or-map is-ace? (cons waste tableau))
       (or-map shiftable-iter tableau)
       (and (not (empty-slot? waste))
