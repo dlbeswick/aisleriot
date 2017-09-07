@@ -827,6 +827,20 @@ scm_get_slot (SCM scm_slot_id)
 }
 
 static SCM
+scm_is_slot_expanded (SCM scm_slot_id)
+{
+  AisleriotGame *game = app_game;
+  ArSlot *slot;
+
+  slot = get_slot (game, scm_to_int (scm_slot_id));
+
+  if (!slot)
+    return SCM_EOL;
+
+  return SCM_BOOL(slot->expanded_right || slot->expanded_down);
+}
+
+static SCM
 scm_set_cards (SCM scm_slot_id,
                SCM new_cards)
 {
@@ -1035,6 +1049,7 @@ cscm_init (void *data G_GNUC_UNUSED)
   scm_c_define_gsubr ("reset-surface", 0, 0, 0, scm_reset_surface);
   scm_c_define_gsubr ("add-slot", 1, 0, 0, cscmi_add_slot);
   scm_c_define_gsubr ("get-slot", 1, 0, 0, scm_get_slot);
+  scm_c_define_gsubr ("is-slot-expanded", 1, 0, 0, scm_is_slot_expanded);
   scm_c_define_gsubr ("set-cards-c!", 2, 0, 0, scm_set_cards);
   scm_c_define_gsubr ("set-slot-y-expansion!", 2, 0, 0,
                       scm_set_slot_y_expansion);
@@ -1058,6 +1073,7 @@ cscm_init (void *data G_GNUC_UNUSED)
                 "reset-surface",
                 "add-slot", 
                 "get-slot", 
+                "is-slot-expanded", 
                 "set-cards-c!",
                 "set-slot-y-expansion!", 
                 "set-slot-x-expansion!",

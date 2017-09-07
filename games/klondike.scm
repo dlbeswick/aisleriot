@@ -40,17 +40,55 @@
 		(format #t "Slot ~a: ~a\n" (car slots) (get-slot (car slots)))
 		(f (cdr slots))))
    
-	(format #t "\nALL VALID MOVES\n ~a\n" (moves-valid gs))
+	(format #t "\nALL VALID MOVES\n")
+	(moves-valid gs (lambda (m) (format #t "~a\n" m)))
 	))
 
-;;; Return alists of all permutations of the given lists.
-(define (permute . lists)
-  (cond ((null? lists) '())
-		((null? (cdr lists)) (car lists))
-		(else (let ((permutation
-					 (append-map (lambda (e0) (map (lambda (e1) (cons e0 e1)) (second lists))) (first lists))))
-				(apply permute (append (list permutation) (cddr lists))))))
-  )
+
+;; Return the next list of lists in the sequence:
+;; ((1 2 3) (a b))
+;; ((2 3) (a b))
+;; ((3) (a b))
+;; ((1 2 3) (b))
+;; ...
+;; ((3) (b))
+;; ()
+;;
+;; llo: original list of lists
+;; ll: result of last iteration, or llo
+(define (llists-permute-iterate llo ll)
+  (cond
+   ;; Terminating condition: all input lists have one element
+   ((let done ((lli ll))
+	  (or (null? lli) (and (null? (cdar lli)) (done (cdr lli))))) '())
+   (else
+	(let f ((out '())
+			(lloi llo)
+			;; If the first item is empty then set lli to ll, else take an element from ll's head and set lli to it. 
+			(lli (if (null? (car ll)) ll (cons (cdar ll) (cdr ll)))))
+	  (letrec
+		  ;; Record if the first list is empty.
+		  ((exhausted (null? (car lli)))
+		   ;; If the head is exhausted then replenish it from the head of the original list.
+		   (newhead (list-head (if exhausted lloi lli) 1)))
+		(cond
+		 ;; If no more elements following, then append new head and return.
+		 ((null? (cdr lli)) (append out newhead))
+		 (else (f (append out newhead)
+				  (cdr lloi)
+				  ;; If the head is exhausted, then remove the first item from the list that follows.
+				  (if exhausted (cons (cdadr lli) (cddr lli)) (cdr lli))))))))))
+
+;; Depth-first permutation of the given lists.
+;; 'proc' is called with an improper list of each permutation.
+(define (permute-it proc . l)
+  (cond ((null? l) '())
+		((null? (cdr l)) l)
+		(else (let f ((r l) (cpermutations 0))
+				(cond ((null? r) cpermutations)
+					  (else
+					   (proc (fold (lambda (e p) (cons p (car e))) (caar r) (cdr r)))
+					   (f (llists-permute-iterate l r) (+ 1 cpermutations))))))))
 
 ;;; A potential game move. It need not be valid.
 (define-class <move> (<object>)
@@ -77,8 +115,8 @@
 ;;; True if move is valid
 (define-method (valid? (self <move>))
   (and (is-visible? (card-source-get self))
-	   ;; Either in the tableau or in foundation and the source card is the top card.
-	   (or (member (slot-source-get self) tableau) (= (slot-source-card-idx-get self) 0))
+	   ;; Only the top cards of non-expanded slots (i.e. foundation) can be played.
+	   (or (is-slot-expanded (slot-source-get self)) (= (slot-source-card-idx-get self) 0))
 	   (not (empty-slot? (slot-source-get self)))
 	   (droppable? (slot-source-get self) (card-list-get self) (slot-dest-get self))
 	   )
@@ -115,26 +153,27 @@
 		  (list (slot-ref self '-waste))))
 
 ;; All potential moves at this node.
-(define-method (moves-all (self <game-state>))
+(define-method (moves-all-it (self <game-state>) proc)
   ;; Get alist of slots and indicies with cards ((slot . card-idx) (6 . 1) ... )
-  (let* ((slots-with-idxs
-		  (append-map (lambda (slot)
-				 (map (lambda (idx) (cons slot idx)) (iota (length (get-cards slot)))))
-			   (slots-all self)))
-		 ;; Get all combinations of moves among the slots and each card in the slots
-		 ;; (((slot-src . card-idx) . slot-dst) ((6 . 0) . 8) ... )
-		 (possible-moves
-		  (permute slots-with-idxs (slots-all self))))
-	;; Construct <move>s
-	(map
-	 (lambda (p) (make <move> #:slot-source (caar p) #:slot-source-card-idx (cdar p) #:slot-dest (cdr p)))
-	 possible-moves)
-	)
+  (let ((slots-with-idxs
+		 (append-map (lambda (slot)
+					   (map (lambda (idx) (cons slot idx)) (iota (length (get-cards slot)))))
+					 (slots-all self))))
+	;; Get all combinations of moves among the slots and each card in the slots
+	;; (((slot-src . card-idx) . slot-dst) ((6 . 0) . 8) ... )
+	(permute-it (lambda (p)
+				  (proc
+				   (make <move>
+					 #:slot-source (caar p)
+					 #:slot-source-card-idx (cdar p)
+					 #:slot-dest (cdr p))))
+				slots-with-idxs
+				(slots-all self)))
   )
  
 ;; All possible valid moves at this node.
-(define-method (moves-valid (self <game-state>))
-  (filter valid? (moves-all self)))
+(define-method (moves-valid (self <game-state>) proc)
+  (moves-all-it self (lambda (m) (if (valid? m) (proc m)))))
 
 
 (define (new-game)
