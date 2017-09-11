@@ -14,7 +14,25 @@
 ; You should have received a copy of the GNU General Public License
 ; along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-(use-modules (aisleriot interface) (aisleriot api) (oop goops) (srfi srfi-1) (ice-9 format))
+(use-modules (aisleriot interface)
+			 (aisleriot api)
+			 (oop goops)
+			 (ice-9 format)
+			 (srfi srfi-1)
+			 (rnrs base)
+			 (rnrs bytevectors)
+			 )
+
+(define-method (hash-djb (input <bytevector>) (mod <integer>))
+  (let f ((hash 5381) (iinput (bytevector->u8-list input)))
+	(cond ((null? iinput) (logand hash mod))
+		  (else (f (+ (logand (ash hash 5) mod) hash (car iinput)) (cdr iinput))))))
+
+(define-method (hash-djb (input <bytevector>))
+  (hash-djb input #xFFFFFFFF))
+  
+;(hash-djb (uint-list->bytevector '(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20) (native-endianness) 4))
+
 
 (define deal-one #t)    ;deal one card at a time from stock to waste, 2 redeals
 (define deal-three #f)  ;deal three cards at a time from stock to waste
@@ -34,14 +52,20 @@
 (define (report)
   (let ((gs (make <game-state> #:tableau tableau #:foundation foundation #:waste waste)))
 	(display "\nALL CARDS\n")
-   
+
 	(let f ((slots (slots-all gs)))
 	  (unless (null? slots)
 		(format #t "Slot ~a: ~a\n" (car slots) (get-slot (car slots)))
 		(f (cdr slots))))
    
 	(format #t "\nALL VALID MOVES\n")
-	(moves-valid gs (lambda (m) (format #t "~a\n" m)))
+	(let ((move #nil))
+	  (moves-valid
+	   gs
+	   (lambda (m)
+		 (format #t "~a\n" m)
+		 (unless move (set! move m))))
+	  (execute gs move))
 	))
 
 
@@ -64,9 +88,9 @@
    (else
 	(let f ((out '())
 			(lloi llo)
-			;; If the first item is empty then set lli to ll, else take an element from ll's head and set lli to it. 
+			;; If the first item is empty then init lli to ll, else remove an element from ll's head and set lli to it. 
 			(lli (if (null? (car ll)) ll (cons (cdar ll) (cdr ll)))))
-	  (letrec
+	  (let*
 		  ;; Record if the first list is empty.
 		  ((exhausted (null? (car lli)))
 		   ;; If the head is exhausted then replenish it from the head of the original list.
@@ -76,11 +100,13 @@
 		 ((null? (cdr lli)) (append out newhead))
 		 (else (f (append out newhead)
 				  (cdr lloi)
-				  ;; If the head is exhausted, then remove the first item from the list that follows.
+				  ;; If the head of lli is exhausted, then remove the first item from the list that follows.
+				  ;; I.e. (() (1 2 3) (a b)) will become ((2 3) (a b))
 				  (if exhausted (cons (cdadr lli) (cddr lli)) (cdr lli))))))))))
 
 ;; Depth-first permutation of the given lists.
-;; 'proc' is called with an improper list of each permutation.
+;; 'proc' is called with an alist of each permutation.
+;; Returns the total number of permutations.
 (define (permute-it proc . l)
   (cond ((null? l) '())
 		((null? (cdr l)) l)
@@ -88,20 +114,117 @@
 				(cond ((null? r) cpermutations)
 					  (else
 					   (proc (fold (lambda (e p) (cons p (car e))) (caar r) (cdr r)))
-					   (f (llists-permute-iterate l r) (+ 1 cpermutations))))))))
+					   (f (llists-permute-iterate l r) (1+ cpermutations))))))))
+
+;;; Node in a neural network.
+(define-class <nn-node> (<object>)
+  )
+
+;;; Connection between neural network nodes.
+(define-class <nn-link> (<object>)
+  (-node-source #:init-keyword #:node-source)
+  (-node-dest #:init-keyword #:node-dest)
+  (-weight #:init-keyword #:weight)
+  )
+
+;;; Input node.
+(define-class <nn-node-input> (<nn-node>)
+  (-links-out #:init-keyword #:links-out)
+  )
+
+(define-method (value-get (self <nn-node>))
+  (error "Implementation required"))
+
+;;; Input node corresponding to a move from a source slot that can have a single card.
+;;;
+;;; Encodes data from the move as a numeric value.
+(define-class <nn-node-input-move> (<nn-node-input>)
+  (-value) 				                  ; <integer>
+  (-move #:init-keyword #:move)           ; <move>
+  (-links-out #:init-keyword #:links-out) ; <list <nn-link>>
+  )
+
+(define-method (value-get (self <nn-node-input-move>))
+  (cond ((slot-ref self '-value) (slot-ref self '-value))
+		(else (let ((result
+					 (hash-djb (uint-list->bytevector (nn-encode (slot-ref self '-move))))))
+				(slot-set! self '-value result)
+				result))))
+
+;;; Output node.
+(define-class <nn-node-output> (<nn-node>)
+  )
+
+;;; Terminating node with real value output.
+(define-class <nn-node-output-real> (<nn-node-output>)
+  (-value #:init-keyword #:value)
+  )
+
+;;; Hidden layer node.
+(define-class <nn-node-hidden> (<nn-node>)
+  (-links-out #:init-keyword #:links-out)
+  )
+
+;;; Network layer.
+(define-class <nn-layer> (<nn-node>)
+  (-nodes #:init-keyword #:nodes)
+  )
+
+;;; Neural network
+(define-class <nn-network> (<object>)
+  (-layer-input #:init-keyword #:layer-input)
+  (-layers-hidden #:init-keyword #:layers-hidden #:getter layers-hidden-get)
+  )
+
+(define-method (layer-output-get (self <nn-network>))
+  (last (layers-hidden-get self)))
 
 ;;; A potential game move. It need not be valid.
 (define-class <move> (<object>)
+  )
+
+(define-method (id-get (self <move>))
+  (assert #f))
+
+(define-method (valid? (self <move>))
+  (assert #f))
+
+;;; Move by dealing a card from the deck.
+(define-class <move-deal> (<move>)
+  )
+
+(define-method (id-get (self <move-deal>))
+  999)
+
+(define-method (valid? (self <move-deal>))
+  (dealable?))
+
+;;; Move by shifting a stack of cards of size 1 or greater.
+(define-class <move-cards> (<move>)
   (-id #:init-keyword #:id)
   (-slot-source #:init-keyword #:slot-source #:getter slot-source-get)
   (-slot-dest #:init-keyword #:slot-dest #:getter slot-dest-get)
   (-slot-source-card-idx #:init-keyword #:slot-source-card-idx #:getter slot-source-card-idx-get)
   )
 
+(define-method (id-get (self <move-cards>))
+  (slot-ref self '-id))
+
+(define (-nn-card-encode card)
+  (list (car card)     ; rank
+		(caar card)    ; suit
+		(if (caaar card) 1 0))) ; flipped
+
+(define-method (nn-encode (self <move-cards>))
+  (append (list (slot-source-get move)
+				(slot-dest-get move)
+				(slot-source-card-idx move))
+		  (map -nn-card-encode (card-list-get move))))
+
 ;;; Get the list of cards that would be picked up by the player for this move.
 ;;; '() if no cards could be picked up.
 ;;; Order is lowest to highest.
-(define-method (card-list-get (self <move>))
+(define-method (card-list-get (self <move-cards>))
   (let ((top-build (get-top-build (get-cards (slot-source-get self)) '())))
 	(if (>= (slot-source-card-idx-get self) (length top-build))
 		'()
@@ -109,11 +232,11 @@
   )
 
 ;;; Card at source position and slot
-(define-method (card-source-get (self <move>))
+(define-method (card-source-get (self <move-cards>))
   (list-ref (get-cards (slot-source-get self)) (slot-source-card-idx-get self)))
 
 ;;; True if move is valid
-(define-method (valid? (self <move>))
+(define-method (valid? (self <move-cards>))
   (and (is-visible? (card-source-get self))
 	   ;; Only the top cards of non-expanded slots (i.e. foundation) can be played.
 	   (or (is-slot-expanded (slot-source-get self)) (= (slot-source-card-idx-get self) 0))
@@ -122,8 +245,8 @@
 	   )
   )
 
-(define-method (display (self <move>) port)
-  (format port "#<<move> src: ~a-~a dst: ~a>"
+(define-method (display (self <move-cards>) port)
+  (format port "#<<move-cards> src: ~a-~a dst: ~a>"
 		  (slot-source-get self)
 		  (slot-source-card-idx-get self)
 		  (slot-dest-get self))
@@ -135,12 +258,6 @@
   (-foundation #:init-keyword #:foundation)
   (-waste #:init-keyword #:waste)
   (-move-id #:init-value 0))
-
-(define-method (move-add (self <game-state>) (move <move>))
-  (slot-set! move 'id (create-move-id self))
-  (slot-set! self
-			 'moves-valid
-			 (cons move (slot-ref self moves-valid))))
 
 (define-method (move-id-create (self <game-state>))
   (let ((move-id (slot-ref self '-move-id)))
@@ -155,6 +272,7 @@
 ;; All potential moves at this node.
 (define-method (moves-all-it (self <game-state>) proc)
   ;; Get alist of slots and indicies with cards ((slot . card-idx) (6 . 1) ... )
+  ;; Used to make a move from every card in the stack that could be played from a slot.
   (let ((slots-with-idxs
 		 (append-map (lambda (slot)
 					   (map (lambda (idx) (cons slot idx)) (iota (length (get-cards slot)))))
@@ -163,17 +281,34 @@
 	;; (((slot-src . card-idx) . slot-dst) ((6 . 0) . 8) ... )
 	(permute-it (lambda (p)
 				  (proc
-				   (make <move>
+				   (make <move-cards>
 					 #:slot-source (caar p)
 					 #:slot-source-card-idx (cdar p)
 					 #:slot-dest (cdr p))))
 				slots-with-idxs
 				(slots-all self)))
+  (proc (make <move-deal>))
   )
  
 ;; All possible valid moves at this node.
 (define-method (moves-valid (self <game-state>) proc)
   (moves-all-it self (lambda (m) (if (valid? m) (proc m)))))
+
+(define-method (execute (gs <game-state>) (move <move-cards>))
+  (let* ((srccards (card-list-get move))
+		 (newsrccards (list-tail (get-cards (slot-source-get move)) (length srccards)))
+		 (newdstcards (append srccards (get-cards (slot-dest-get move)))))
+	(format #t "card move: ~a srccards: ~a newsrc: ~a newdst: ~a\n" move srccards newsrccards newdstcards)
+	;; Remove cards from source slot
+	(set-cards-c! (slot-source-get move) newsrccards)
+	;; Put cards in dest slot
+	(set-cards-c! (slot-dest-get move) newdstcards)
+	(unless (empty-slot? (slot-source-get move))
+	  (make-visible-top-card (slot-source-get move)))))
+
+(define-method (execute (gs <game-state>) (move <move-deal>))
+  (deal))
+
 
 
 (define (new-game)

@@ -1038,6 +1038,13 @@ scm_delayed_call (SCM callback)
   return SCM_BOOL_T;
 }
 
+static SCM
+scm_deal (void)
+{
+  aisleriot_game_deal_cards(app_game);
+  return SCM_BOOL_T;
+}
+
 static void
 cscm_init (void *data G_GNUC_UNUSED)
 {
@@ -1066,6 +1073,7 @@ cscm_init (void *data G_GNUC_UNUSED)
   scm_c_define_gsubr ("undo-set-sensitive", 1, 0, 0, scm_undo_set_sensitive);
   scm_c_define_gsubr ("redo-set-sensitive", 1, 0, 0, scm_redo_set_sensitive);
   scm_c_define_gsubr ("dealable-set-sensitive", 1, 0, 0, scm_dealable_set_sensitive);
+  scm_c_define_gsubr ("deal", 0, 0, 0, scm_deal);
 
   scm_c_export ("set-feature-word!", 
                 "get-feature-word", 
@@ -1088,6 +1096,7 @@ cscm_init (void *data G_GNUC_UNUSED)
                 "undo-set-sensitive", 
                 "redo-set-sensitive", 
                 "dealable-set-sensitive",
+				"deal",
                 NULL);
 }
 
