@@ -1,7 +1,7 @@
 NULL = 
 
 module_GUILE = \
-	api.scm \
+	aisleriot/api.scm \
 	$(NULL)
 
 games_GUILE = \
