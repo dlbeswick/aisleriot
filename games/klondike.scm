@@ -59,13 +59,14 @@
 		(f (cdr slots))))
    
 	(format #t "\nALL VALID MOVES\n")
-	(let ((move #nil))
+	(let ((moves '()))
 	  (moves-valid
 	   gs
 	   (lambda (m)
 		 (format #t "~a\n" m)
-		 (unless move (set! move m))))
-	  (execute gs move))
+		 (set! moves (cons m moves))))
+	  (if (null? moves) '()
+		  (begin (execute gs (last moves)) (delayed-call report))))
 	))
 
 
@@ -201,14 +202,13 @@
 
 ;;; Move by shifting a stack of cards of size 1 or greater.
 (define-class <move-cards> (<move>)
-  (-id #:init-keyword #:id)
   (-slot-source #:init-keyword #:slot-source #:getter slot-source-get)
   (-slot-dest #:init-keyword #:slot-dest #:getter slot-dest-get)
   (-slot-source-card-idx #:init-keyword #:slot-source-card-idx #:getter slot-source-card-idx-get)
   )
 
 (define-method (id-get (self <move-cards>))
-  (slot-ref self '-id))
+  (slot-source-get self))
 
 (define (-nn-card-encode card)
   (list (car card)     ; rank
@@ -530,7 +530,7 @@
           (any-slot-nonempty? (cdr slots)))))
 
 (define (get-hint)
-  (report)
+  (delayed-call report)
   (or (or-map is-ace? (cons waste tableau))
       (or-map shiftable-iter tableau)
       (and (not (empty-slot? waste))
