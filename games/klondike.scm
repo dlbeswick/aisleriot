@@ -50,7 +50,7 @@
 (define waste 1)
 
 (define (report)
-  (let ((gs (make <game-state> #:tableau tableau #:foundation foundation #:waste waste)))
+  (let ((gs (make <game-state> #:game (make <game> #:tableau tableau #:foundation foundation #:waste waste))))
 	(display "\nALL CARDS\n")
 
 	(let f ((slots (slots-all gs)))
@@ -144,7 +144,7 @@
 ;;; Encodes data from the move as a numeric value.
 (define-class <nn-node-input-move> (<nn-node-input>)
   (-value) 				                  ; <integer>
-  (-move #:init-keyword #:move)           ; <move>
+  (-move #:setter move-set!)              ; <move>
   (-links-out #:init-keyword #:links-out) ; <list <nn-link>>
   )
 
@@ -180,7 +180,7 @@
   (-nodes #:init-keyword #:nodes #:getter nodes-get)
   )
 
-(define-method (fully-connect (layer0 <nn-layer>) (layer1 <nn-layer>))
+(define-method (fully-connect! (layer0 <nn-layer>) (layer1 <nn-layer>))
   (permute-it (lambda (anodes)
 				(links-out-set! (car anodes) (cons (make <nn-link> #:node-source (car anodes) #:node-dest (cdr anodes))
 												   (links-out-get layer0))))
@@ -192,7 +192,7 @@
   (let each-node ((inodes (slot-ref self '-nodes)))
 	(cond ((null? inodes) '())
 	(else (randomize! (car inodes))
-		  (each-node (cdr inodes)))))
+		  (each-node (cdr inodes))))))
 
 ;;; Neural network
 (define-class <nn-network> (<object>)
@@ -202,7 +202,31 @@
   )
 
 (define (nn-network-fully-connected nodes-inputs nhiddenlayers nhiddennodes nodes-outputs)
-  (let ((layer-input (make <nn-layer> #:nodes nodes-inputs)
+  (let ((layer-input
+		 (make <nn-layer> #:nodes nodes-inputs))
+		(layer-output
+		 (make <nn-layer> #:nodes nodes-outputs))
+		(layers-hidden
+		 (let make-hlayers ((out '()) (i nhiddenlayers))
+		   (if (<= 0 i) out
+			   (make-hlayers
+				(cons
+				 (make <nn-layer>
+				   #:nodes (let make-nodes ((out '()) (i nhiddennodes))
+							 (if (> 0 i)
+								 (make-nodes (cons (make <nn-node-hidden>) out)
+											 (1- i))
+								 out)))
+				 out)
+				(1- i)))
+		   out))
+		(let connect ((li layers-hidden))
+		  (fully-connect! layer-input (car li))
+		  (connect (cdr li)))
+		(make <nn-network>
+		  #:layer-input layer-input
+		  #:layers-hidden layers-hidden
+		  #:layer-output layer-output)))
   )
 
 (define-method (randomize! (self <nn-network>))
@@ -283,22 +307,36 @@
 		  (slot-dest-get self))
   )
 
-;;; A node in the current game state tree
-(define-class <game-state> (<object>)
+;;; Information relating to game rules
+(define-class <game> (<object>)
   (-tableau #:init-keyword #:tableau)
   (-foundation #:init-keyword #:foundation)
-  (-waste #:init-keyword #:waste)
+  (-waste #:init-keyword #:waste))
+
+(define-method (slots-all (self <game>))
+  (append (slot-ref self '-tableau)
+		  (slot-ref self '-foundation)
+		  (list (slot-ref self '-waste))))
+
+(define-method (make-nn (self <game>))
+  (nn-network-fully-connected
+   (let make-inputs ((out '()) (i (length (slots-all self))))
+	 (if (<= 0 i) out
+		 (make-inputs (cons (make <nn-node-input-move>)) (1- i))))
+   1
+   6
+   (list (make <nn-node-output-real>)))
+  )
+
+;;; A node in the current game state tree
+(define-class <game-state> (<object>)
+  (-game #:init-keyword #:game #:getter game-get)
   (-move-id #:init-value 0))
 
 (define-method (move-id-create (self <game-state>))
   (let ((move-id (slot-ref self '-move-id)))
 	(slot-set! self '-move-id (+ move-id 1))
 	move-id))
-
-(define-method (slots-all (self <game-state>))
-  (append (slot-ref self '-tableau)
-		  (slot-ref self '-foundation)
-		  (list (slot-ref self '-waste))))
 
 ;; All potential moves at this node.
 (define-method (moves-all-it (self <game-state>) proc)
@@ -317,7 +355,7 @@
 					 #:slot-source-card-idx (cdar p)
 					 #:slot-dest (cdr p))))
 				slots-with-idxs
-				(slots-all self)))
+				(slots-all (game-get self))))
   (proc (make <move-deal>))
   )
  
@@ -340,6 +378,8 @@
 (define-method (execute (gs <game-state>) (move <move-deal>))
   (deal))
 
+(define nn-klondike-inputs (nn-network-fully-connected 
+(define network (nn-network-fully-connected 
 
 
 (define (new-game)
