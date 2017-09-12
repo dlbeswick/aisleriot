@@ -125,8 +125,11 @@
 (define-class <nn-link> (<object>)
   (-node-source #:init-keyword #:node-source)
   (-node-dest #:init-keyword #:node-dest)
-  (-weight #:init-keyword #:weight)
+  (-weight #:init-keyword #:weight) ; <real>
   )
+
+(define-method (randomize! (self <nn-link>))
+  (slot-set! self -weight (random 1.0)))
 
 ;;; Input node.
 (define-class <nn-node-input> (<nn-node>)
@@ -163,22 +166,50 @@
 
 ;;; Hidden layer node.
 (define-class <nn-node-hidden> (<nn-node>)
-  (-links-out #:init-keyword #:links-out)
+  (-links-out #:init-keyword #:links-out #:getter links-out-get #:setter links-out-set!)
   )
+
+(define-method (randomize! (self <nn-node-hidden>))
+  (let each-link ((ilinks (slot-ref self '-nodes)))
+	(cond ((null? ilinks) '())
+		  (else (randomize (car ilinks))
+				(each-link (cdr ilinks))))))
 
 ;;; Network layer.
 (define-class <nn-layer> (<nn-node>)
-  (-nodes #:init-keyword #:nodes)
+  (-nodes #:init-keyword #:nodes #:getter nodes-get)
   )
+
+(define-method (fully-connect (layer0 <nn-layer>) (layer1 <nn-layer>))
+  (permute-it (lambda (anodes)
+				(links-out-set! (car anodes) (cons (make <nn-link> #:node-source (car anodes) #:node-dest (cdr anodes))
+												   (links-out-get layer0))))
+			  (nodes-get layer0)
+			  (nodes-get layer1)))
+
+
+(define-method (randomize! (self <nn-layer>))
+  (let each-node ((inodes (slot-ref self '-nodes)))
+	(cond ((null? inodes) '())
+	(else (randomize! (car inodes))
+		  (each-node (cdr inodes)))))
 
 ;;; Neural network
 (define-class <nn-network> (<object>)
   (-layer-input #:init-keyword #:layer-input)
   (-layers-hidden #:init-keyword #:layers-hidden #:getter layers-hidden-get)
+  (-layer-output #:init-keyword #:layer-output  #:getter layer-output-get)
   )
 
-(define-method (layer-output-get (self <nn-network>))
-  (last (layers-hidden-get self)))
+(define (nn-network-fully-connected nodes-inputs nhiddenlayers nhiddennodes nodes-outputs)
+  (let ((layer-input (make <nn-layer> #:nodes nodes-inputs)
+  )
+
+(define-method (randomize! (self <nn-network>))
+  (let each-layer ((ilayers (layers-hidden-get self)))
+	(cond ((null? ilayers) '())
+		  (else (randomize! (car ilayers))
+				(each-layer (cdr ilayers))))))
 
 ;;; A potential game move. It need not be valid.
 (define-class <move> (<object>)
