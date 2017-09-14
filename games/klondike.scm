@@ -50,10 +50,15 @@
 (define waste 1)
 
 (define (report)
-  (let ((gs (make <game-state> #:game (make <game> #:tableau tableau #:foundation foundation #:waste waste))))
+  (let* ((game (make <game> #:tableau tableau #:foundation foundation #:waste waste))
+		 (gs (make <game-state> #:game game))
+		 (network (randomize! (nn-network-klondike game))))
+
+	(format #t "\nNETWORK:\n~a\n" (inspect network))
+	
 	(display "\nALL CARDS\n")
 
-	(let f ((slots (slots-all gs)))
+	(let f ((slots (slots-all game)))
 	  (unless (null? slots)
 		(format #t "Slot ~a: ~a\n" (car slots) (get-slot (car slots)))
 		(f (cdr slots))))
@@ -65,9 +70,14 @@
 	   (lambda (m)
 		 (format #t "~a\n" m)
 		 (set! moves (cons m moves))))
+
+	  (for-each (lambda (m) (nn-network-set network m game)) moves)
+	  
 	  (if (null? moves) '()
-		  (begin (execute gs (last moves)) (delayed-call report))))
-	))
+	'());	  (begin (execute gs (last moves)) (delayed-call report))))
+	  )
+	)
+  )
 
 
 ;; Return the next list of lists in the sequence:
@@ -117,43 +127,67 @@
 					   (proc (fold (lambda (e p) (cons p (car e))) (caar r) (cdr r)))
 					   (f (llists-permute-iterate l r) (1+ cpermutations))))))))
 
-;;; Node in a neural network.
-(define-class <nn-node> (<object>)
-  )
-
 ;;; Connection between neural network nodes.
 (define-class <nn-link> (<object>)
   (-node-source #:init-keyword #:node-source)
   (-node-dest #:init-keyword #:node-dest)
-  (-weight #:init-keyword #:weight) ; <real>
+  (-weight #:init-value 1.0) ; <real>
   )
+
+(define-method (inspect (self <nn-link>))
+  (format #f
+		  "src: ~a dst: ~a weight: ~a"
+		  (slot-ref self '-node-source)
+		  (slot-ref self '-node-dest)
+		  (slot-ref self '-weight)))
 
 (define-method (randomize! (self <nn-link>))
-  (slot-set! self -weight (random 1.0)))
+  (slot-set! self '-weight (random 1.0))
+  self)
+
+;;; Node in a neural network.
+(define-class <nn-node> (<object>)
+  (-id #:init-keyword #:id)
+  )
+
+(define-method (inspect (self <nn-node>))
+  (format #f
+		  "<~a ~a>"
+		  (class-name (class-of self))
+		  (-display self)))
+
+(define-method (-display (self <nn-node>))
+  (format #f "~a" (slot-ref self '-id)))
+
+
+;;; Node with output links.
+(define-class <nn-node-producer> (<nn-node>)
+  (-links-out #:init-keyword #:links-out #:getter links-out-get #:setter links-out-set!) ; <list <nn-link>>
+  )
+
+(define-method (-display (self <nn-node-producer>))
+  (format #f
+		  "~a links: ~a"
+		  (next-method)
+		  (map inspect (links-out-get self))))
+
+(define-method (randomize! (self <nn-node-producer>))
+  (let each-link ((ilinks (links-out-get self)))
+	(cond ((null? ilinks) '())
+		  (else (randomize! (car ilinks))
+				(each-link (cdr ilinks)))))
+  self)
+
 
 ;;; Input node.
-(define-class <nn-node-input> (<nn-node>)
-  (-links-out #:init-keyword #:links-out)
+(define-class <nn-node-input> (<nn-node-producer>)
   )
 
-(define-method (value-get (self <nn-node>))
+(define-method (value-get (self <nn-node-input>))
   (error "Implementation required"))
 
-;;; Input node corresponding to a move from a source slot that can have a single card.
-;;;
-;;; Encodes data from the move as a numeric value.
-(define-class <nn-node-input-move> (<nn-node-input>)
-  (-value) 				                  ; <integer>
-  (-move #:setter move-set!)              ; <move>
-  (-links-out #:init-keyword #:links-out) ; <list <nn-link>>
-  )
-
-(define-method (value-get (self <nn-node-input-move>))
-  (cond ((slot-ref self '-value) (slot-ref self '-value))
-		(else (let ((result
-					 (hash-djb (uint-list->bytevector (nn-encode (slot-ref self '-move))))))
-				(slot-set! self '-value result)
-				result))))
+(define-method (clear! (self <nn-node-input>))
+  (error "Implementation required"))
 
 ;;; Output node.
 (define-class <nn-node-output> (<nn-node>)
@@ -161,79 +195,100 @@
 
 ;;; Terminating node with real value output.
 (define-class <nn-node-output-real> (<nn-node-output>)
-  (-value #:init-keyword #:value)
+  (-value #:init-value 0.0 #:getter value-get #:setter value-set!)
   )
 
 ;;; Hidden layer node.
-(define-class <nn-node-hidden> (<nn-node>)
-  (-links-out #:init-keyword #:links-out #:getter links-out-get #:setter links-out-set!)
+(define-class <nn-node-hidden> (<nn-node-producer>)
   )
-
-(define-method (randomize! (self <nn-node-hidden>))
-  (let each-link ((ilinks (slot-ref self '-nodes)))
-	(cond ((null? ilinks) '())
-		  (else (randomize (car ilinks))
-				(each-link (cdr ilinks))))))
 
 ;;; Network layer.
-(define-class <nn-layer> (<nn-node>)
+(define-class <nn-layer> (<object>)
   (-nodes #:init-keyword #:nodes #:getter nodes-get)
   )
+
+(define-method (inspect (self <nn-layer>))
+  (format #f
+		  "<nn-layer nodes: ~a>"
+		  (map inspect (nodes-get self))))
+
+; Ideally shouldn't need this method
+;(define-method (node-by-id id)
+;  (find (lambda (n) (equal? (get-id n))) (nodes-get self)))
 
 (define-method (fully-connect! (layer0 <nn-layer>) (layer1 <nn-layer>))
   (permute-it (lambda (anodes)
 				(links-out-set! (car anodes) (cons (make <nn-link> #:node-source (car anodes) #:node-dest (cdr anodes))
-												   (links-out-get layer0))))
+												   (links-out-get (car anodes)))))
 			  (nodes-get layer0)
-			  (nodes-get layer1)))
-
+			  (nodes-get layer1))
+  )
 
 (define-method (randomize! (self <nn-layer>))
   (let each-node ((inodes (slot-ref self '-nodes)))
 	(cond ((null? inodes) '())
 	(else (randomize! (car inodes))
-		  (each-node (cdr inodes))))))
+		  (each-node (cdr inodes)))))
+  self)
+
+(define-class <nn-layer-input> (<nn-layer>)
+  )
+
+(define-method (clear! (self <nn-layer>))
+  (for-each (lambda (n) (clear! n)) (nodes-get self)))
 
 ;;; Neural network
 (define-class <nn-network> (<object>)
-  (-layer-input #:init-keyword #:layer-input)
+  (-layer-input #:init-keyword #:layer-input #:getter layer-input-get)
   (-layers-hidden #:init-keyword #:layers-hidden #:getter layers-hidden-get)
   (-layer-output #:init-keyword #:layer-output  #:getter layer-output-get)
   )
 
-(define (nn-network-fully-connected nodes-inputs nhiddenlayers nhiddennodes nodes-outputs)
-  (let ((layer-input
-		 (make <nn-layer> #:nodes nodes-inputs))
-		(layer-output
-		 (make <nn-layer> #:nodes nodes-outputs))
-		(layers-hidden
-		 (let make-hlayers ((out '()) (i nhiddenlayers))
-		   (if (<= 0 i) out
-			   (make-hlayers
-				(cons
-				 (make <nn-layer>
-				   #:nodes (let make-nodes ((out '()) (i nhiddennodes))
-							 (if (> 0 i)
-								 (make-nodes (cons (make <nn-node-hidden>) out)
-											 (1- i))
-								 out)))
-				 out)
-				(1- i)))
-		   out))
-		(let connect ((li layers-hidden))
-		  (fully-connect! layer-input (car li))
-		  (connect (cdr li)))
-		(make <nn-network>
-		  #:layer-input layer-input
-		  #:layers-hidden layers-hidden
-		  #:layer-output layer-output)))
+(define-method (inspect (self <nn-network>))
+  (format #f
+		  "<nn-network\n input: ~a\n hidden: ~a\n output: ~a>"
+		  (inspect (slot-ref self '-layer-input))
+		  (map inspect (layers-hidden-get self))
+		  (inspect (layer-output-get self))))
+
+(define (nn-network-fully-connected class layer-input nhiddenlayers nhiddennodes nodes-outputs)
+  (let* ((layer-output
+		  (make <nn-layer> #:nodes nodes-outputs))
+		 (layers-hidden
+		  (let make-hlayers ((out '()) (i nhiddenlayers))
+			(if (= 0 i) out
+				(make-hlayers
+				 (cons
+				  (make <nn-layer>
+					#:nodes (let make-nodes ((out '()) (i nhiddennodes))
+							  (if (= 0 i) out
+								  (make-nodes (cons (make <nn-node-hidden>
+													  #:id (format #f "h~a" i)
+													  #:links-out '())
+													out)
+											  (1- i))
+								  )))
+				  out)
+				 (1- i)))))
+		 (layers-all (append (list layer-input) layers-hidden (list layer-output)))
+		 )
+	(let connect ((li layers-all))
+	  (cond ((null? (cdr li)) #nil)
+			(else (fully-connect! (car li) (cadr li))
+				  (connect (cdr li)))))
+	(make class
+	  #:layer-input layer-input
+	  #:layers-hidden layers-hidden
+	  #:layer-output layer-output)
+	)
   )
 
 (define-method (randomize! (self <nn-network>))
-  (let each-layer ((ilayers (layers-hidden-get self)))
+  (let each-layer ((ilayers (append (list (slot-ref self '-layer-input)) (layers-hidden-get self))))
 	(cond ((null? ilayers) '())
 		  (else (randomize! (car ilayers))
-				(each-layer (cdr ilayers))))))
+				(each-layer (cdr ilayers)))))
+  self)
 
 ;;; A potential game move. It need not be valid.
 (define-class <move> (<object>)
@@ -300,8 +355,8 @@
 	   )
   )
 
-(define-method (display (self <move-cards>) port)
-  (format port "#<<move-cards> src: ~a-~a dst: ~a>"
+(define-method (inspect (self <move-cards>))
+  (format #f "#<<move-cards> src: ~a sidx: ~a dst: ~a>"
 		  (slot-source-get self)
 		  (slot-source-card-idx-get self)
 		  (slot-dest-get self))
@@ -317,16 +372,6 @@
   (append (slot-ref self '-tableau)
 		  (slot-ref self '-foundation)
 		  (list (slot-ref self '-waste))))
-
-(define-method (make-nn (self <game>))
-  (nn-network-fully-connected
-   (let make-inputs ((out '()) (i (length (slots-all self))))
-	 (if (<= 0 i) out
-		 (make-inputs (cons (make <nn-node-input-move>)) (1- i))))
-   1
-   6
-   (list (make <nn-node-output-real>)))
-  )
 
 ;;; A node in the current game state tree
 (define-class <game-state> (<object>)
@@ -345,7 +390,7 @@
   (let ((slots-with-idxs
 		 (append-map (lambda (slot)
 					   (map (lambda (idx) (cons slot idx)) (iota (length (get-cards slot)))))
-					 (slots-all self))))
+					 (slots-all (game-get self)))))
 	;; Get all combinations of moves among the slots and each card in the slots
 	;; (((slot-src . card-idx) . slot-dst) ((6 . 0) . 8) ... )
 	(permute-it (lambda (p)
@@ -378,9 +423,86 @@
 (define-method (execute (gs <game-state>) (move <move-deal>))
   (deal))
 
-(define nn-klondike-inputs (nn-network-fully-connected 
-(define network (nn-network-fully-connected 
+;;; NN for cards
+;;; Input node corresponding to a move from a source slot that can have a single card.
+;;;
+;;; Encodes data from the move as a numeric value.
+(define-class <nn-node-input-move> (<nn-node-input>)
+  (-move #:setter move-set! #:init-value #nil)  ; <move>
+  (-value #:init-value #nil)  ; <move>
+  )
 
+(define-method (move-set! (self <nn-node-input-move>) (move <move>))
+  (move-set! self move)
+  (slot-set! self '-value #nil))
+
+(define-method (clear! (self <nn-node-input-move>))
+  (move-set! self #nil)
+  (slot-set! self '-value #nil))
+
+(define-method (-display (self <nn-node-input-move>))
+  (format #f
+		  "~a move: ~a"
+		  (next-method)
+		  (slot-ref self '-move)))
+
+(define-method (value-get (self <nn-node-input-move>))
+  (cond ((slot-ref self '-value) (slot-ref self '-value))
+		(else (let ((result
+					 (if (slot-ref self '-move)
+						 (hash-djb (uint-list->bytevector (nn-encode (slot-ref self '-move))))
+						 (0))))
+				(slot-set! self '-value result)
+				result))))
+
+;;; Klondike
+(define-class <nn-network-klondike> (<nn-network>)
+  )
+
+(define-class <nn-layer-input-klondike> (<nn-layer>)
+  (-nodes-slots #:init-keyword #:nodes-slots #:getter nodes-slots-get)
+  (-node-deal #:init-keyword #:node-deal #:getter node-deal-get)
+  )
+
+(define-method (nn-make-input-layer (game <game>))
+  (let ((node-per-slot
+		 (let f ((out '()) (lislot (slots-all game)) (i 0))
+		   (cond ((null? lislot) (reverse out))
+				 (else (f (cons (make <nn-node-input-move>
+								  #:id (format #f "i~a" i)
+								  #:links-out '())
+								out)
+						  (cdr lislot)
+						  (1+ i))))))
+		)
+	(cons (make <nn-node-input-move> #:id "i-deal" #:links-out '()) node-per-slot)
+	(make <nn-layer-input-klondike>
+	  #:nodes node-per-slot
+	  #:node-deal (car node-per-slot)
+	  #:nodes-slots (cdr node-per-slot))
+	)
+  )
+
+(define-method (nn-network-klondike (game <game>))
+  (nn-network-fully-connected
+   <nn-network-klondike>
+   (nn-make-input-layer game)
+   1
+   6
+   (list (make <nn-node-output-real> #:id "output")))
+  )
+
+(define-method (nn-network-set (network <nn-network-klondike>) (move <move-cards>) (game <game>))
+  (let ((slot-move (slot-source-get move)))
+	(clear! (layer-input-get network))
+	(move-set! (list-ref (1- slot-move) (nodes-slots-get (layer-input-get network))) move)
+	)
+  )
+
+(define-method (nn-network-set (network <nn-network-klondike>) (move <move-deal>) (game <game>))
+  (clear! (layer-input-get network))
+  (move-set! (node-deal-get (layer-input-get network)) move)
+  )
 
 (define (new-game)
   (initialize-playing-area)
