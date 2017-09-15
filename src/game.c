@@ -1039,9 +1039,16 @@ scm_delayed_call (SCM callback)
 }
 
 static SCM
-scm_deal (void)
+scm_meta_deal (void)
 {
   aisleriot_game_deal_cards(app_game);
+  return SCM_BOOL_T;
+}
+
+static SCM
+scm_meta_new_game (void)
+{
+  aisleriot_game_new_game(app_game);
   return SCM_BOOL_T;
 }
 
@@ -1073,7 +1080,8 @@ cscm_init (void *data G_GNUC_UNUSED)
   scm_c_define_gsubr ("undo-set-sensitive", 1, 0, 0, scm_undo_set_sensitive);
   scm_c_define_gsubr ("redo-set-sensitive", 1, 0, 0, scm_redo_set_sensitive);
   scm_c_define_gsubr ("dealable-set-sensitive", 1, 0, 0, scm_dealable_set_sensitive);
-  scm_c_define_gsubr ("deal", 0, 0, 0, scm_deal);
+  scm_c_define_gsubr ("meta-deal", 0, 0, 0, scm_meta_deal);
+  scm_c_define_gsubr ("meta-new-game", 0, 0, 0, scm_meta_new_game);
 
   scm_c_export ("set-feature-word!", 
                 "get-feature-word", 
@@ -1096,7 +1104,8 @@ cscm_init (void *data G_GNUC_UNUSED)
                 "undo-set-sensitive", 
                 "redo-set-sensitive", 
                 "dealable-set-sensitive",
-				"deal",
+				"meta-deal",
+				"meta-new-game",
                 NULL);
 }
 
@@ -1668,6 +1677,10 @@ game_scm_load_game (void *user_data)
 
   scm_dynwind_begin (0);
 
+  /* Activate recording of "source properties" in loaded file to enable line
+	 numbers in backtraces. Helpful when developing games. NOT WORKING */
+  scm_c_eval_string ("(read-enable 'positions)");
+  
   scm_primitive_load_path (scm_from_utf8_string (game_module));
 
   for (i = 0; i <= LAST_MANDATORY_LAMBDA; ++i) {
