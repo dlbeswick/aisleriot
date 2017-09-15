@@ -49,42 +49,45 @@
 (define stock 0)
 (define waste 1)
 
-(define (report)
-  (let* ((game (make <game> #:tableau tableau #:foundation foundation #:waste waste))
-		 (gs (make <game-state> #:game game))
-		 (network (randomize! (nn-network-klondike game))))
-
-	(format #t "\nNETWORK:\n~a\n" (inspect network))
-	
-	(display "\nALL CARDS\n")
-
-	(let f ((slots (slots-all game)))
-	  (unless (null? slots)
-		(format #t "Slot ~a: ~a\n" (car slots) (get-slot (car slots)))
-		(f (cdr slots))))
-   
-	(format #t "\nALL VALID MOVES\n")
-	(let ((moves '()))
-	  (moves-valid
-	   gs
-	   (lambda (m)
-		 (format #t "~a\n" (inspect m))
-		 (set! moves (cons m moves))))
-
-	  (for-each (lambda (m)
-				  (format #t "Try move on network: ~a\n" (inspect m))
-				  (nn-network-set! network m game)
-				  (format #t "\nNETWORK:\n~a\n" (inspect network))
-				  (format #t " Success chance: ~a\n" (success-probability network))
-				  )
-				(reverse moves))
+(define (evaluate game network steps)
+  (cond
+   ((game-won) (display "Won!\n") (format #t "\nNETWORK:\n~a\n\n" (inspect network)) #t)
+   ((= 0 steps) (display "Remaining steps expired\n") (meta-new-game) (evaluate game (randomize! (nn-network-klondike game)) 100))
+   (else
+	(let* ((gs (make <game-state> #:game game)))
+	  (format #t "Step ~a\n" steps)
+	  (display "\nALL CARDS\n")
 	  
-	  (if (null? moves) '()
-	'());	  (begin (execute gs (last moves)) (delayed-call report))))
+	  (let f ((slots (slots-all game)))
+		(unless (null? slots)
+		  (format #t "Slot ~a: ~a\n" (car slots) (get-slot (car slots)))
+		  (f (cdr slots))))
+	  
+	  (format #t "\nALL VALID MOVES\n")
+	  (let ((moves '()))
+		(moves-valid
+		 gs
+		 (lambda (m)
+		   (format #t "~a\n" (inspect m))
+		   (set! moves (cons m moves))))
+		
+		(let ((evals (map (lambda (m)
+							(format #t "Try move on network: ~a\n" (inspect m))
+							(nn-network-set! network m game)
+;;;						  (format #t "\nNETWORK:\n~a\n\n" (inspect network))
+							(cons m (success-probability network))
+							)
+						  (reverse moves))))
+		  (let ((by-score (sort evals (lambda (ala alb) (> (cdr ala) (cdr alb))))))
+			(for-each (lambda (al) (format #t "Success chance for move ~a: ~a\n" (inspect (car al)) (cdr al))) by-score)
+			(execute gs (caar by-score))))
+		
+		(delayed-call (lambda () (evaluate game network (1- steps))))
+		)
 	  )
 	)
-  )
-
+   )
+)
 
 ;; Return the next list of lists in the sequence:
 ;; ((1 2 3) (a b))
@@ -148,7 +151,7 @@
 		  (slot-ref self '-weight)))
 
 (define-method (contribution (self <nn-link>))
-  (* (value-get (slot-ref self '-node-source)) (slot-ref '-weight)))
+  (* (value-get (slot-ref self '-node-source)) (slot-ref self '-weight)))
 
 (define-method (randomize! (self <nn-link>))
   (slot-set! self '-weight (random 1.0))
@@ -188,7 +191,7 @@
   self)
 
 (define-method (value-get (self <nn-node-consumer>))
-  (fold (lambda (link acc) (+ (contribution link) acc) 0.0 (links-in-get self))))
+  (apply + (map contribution (links-in-get self))))
 
 
 ;;; Input node.
@@ -207,7 +210,6 @@
 
 ;;; Terminating node with real value output.
 (define-class <nn-node-output-real> (<nn-node-output>)
-  (-value #:init-value 0.0 #:getter value-get #:setter value-set!)
   )
 
 ;;; Hidden layer node.
@@ -308,17 +310,20 @@
 (define-class <move> (<object>)
   )
 
-(define-method (inspect (self <move>))
-  (format #f "#<~a ~a>" (class-name (class-of self)) (-inspect self)))
-
-(define-method (-inspect (self <move>))
-  (format #f "id: ~a" (id-get self)))
-
 (define-method (id-get (self <move>))
   (assert #f))
 
 (define-method (valid? (self <move>))
   (assert #f))
+
+(define-method (nn-encode (self <move>))
+  (assert #f))
+
+(define-method (inspect (self <move>))
+  (format #f "#<~a ~a>" (class-name (class-of self)) (-inspect self)))
+
+(define-method (-inspect (self <move>))
+  (format #f "id: ~a" (id-get self)))
 
 ;;; Move by dealing a card from the deck.
 (define-class <move-deal> (<move>)
@@ -329,6 +334,11 @@
 
 (define-method (valid? (self <move-deal>))
   (dealable?))
+
+(define-method (nn-encode (self <move-deal>))
+  (assert (valid? self))
+  1
+  )
 
 ;;; Move by shifting a stack of cards of size 1 or greater.
 (define-class <move-cards> (<move>)
@@ -350,15 +360,18 @@
 
 (define (-nn-card-encode card)
   (list (car card)     ; rank
-		(caar card)    ; suit
-		(if (caaar card) 1 0))) ; flipped
+		(cadr card)    ; suit
+		(if (caddr card) 1 0))) ; flipped
 
 (define-method (nn-encode (self <move-cards>))
-  (append (list (slot-source-get move)
-				(slot-dest-get move)
-				(slot-source-card-idx move))
-		  (map -nn-card-encode (card-list-get move))))
-
+  (assert (valid? self))
+  (let ((encoded-list 
+		 (append (list (slot-source-get self)
+					   (slot-dest-get self)
+					   (slot-source-card-idx-get self))
+				 (fold append '() (map -nn-card-encode (card-list-get self))))))
+	(hash-djb (uint-list->bytevector encoded-list (native-endianness) 4))))
+		
 ;;; Get the list of cards that would be picked up by the player for this move.
 ;;; '() if no cards could be picked up.
 ;;; Order is lowest to highest.
@@ -442,7 +455,7 @@
 	  (make-visible-top-card (slot-source-get move)))))
 
 (define-method (execute (gs <game-state>) (move <move-deal>))
-  (deal))
+  (meta-deal))
 
 ;;; NN for cards
 ;;; Input node corresponding to a move from a source slot that can have a single card.
@@ -472,7 +485,7 @@
   (cond ((slot-ref self '-value) (slot-ref self '-value))
 		(else (let ((result
 					 (if (slot-ref self '-move)
-						 (hash-djb (uint-list->bytevector (nn-encode (slot-ref self '-move))))
+						 (nn-encode (slot-ref self '-move))
 						 0)))
 				(slot-set! self '-value result)
 				result))))
@@ -491,19 +504,17 @@
 
 (define-method (nn-make-input-layer (game <game>))
   (let ((node-per-slot
-		 (let f ((out '()) (lislot (slots-all game)) (i 0))
+		 (let f ((out '()) (lislot (sort (slots-all game) <)))
 		   (cond ((null? lislot) (reverse out))
 				 (else (f (cons (make <nn-node-input-move>
-								  #:id (format #f "i~a" i))
+								  #:id (format #f "input-slot-~a" (car lislot)))
 								out)
-						  (cdr lislot)
-						  (1+ i))))))
-		)
-	(cons (make <nn-node-input-move> #:id "i-deal") node-per-slot)
+						  (cdr lislot))))))
+		(node-deal (make <nn-node-input-move> #:id "input-deal")))
 	(make <nn-layer-input-klondike>
-	  #:nodes node-per-slot
-	  #:node-deal (car node-per-slot)
-	  #:nodes-slots (cdr node-per-slot))
+	  #:nodes (cons node-deal node-per-slot)
+	  #:node-deal node-deal
+	  #:nodes-slots node-per-slot) ; These should be in ascending order by slot index
 	)
   )
 
@@ -518,10 +529,11 @@
 
 (define-method (nn-network-set! (network <nn-network-klondike>) (move <move-cards>) (game <game>))
   (clear! (layer-input-get network))
-  (move-set! (list-ref (nodes-slots-get (layer-input-get network))
-					   (1- (slot-source-get move)))
-			 move)
-  )
+  (let ((target-node (list-ref (nodes-slots-get (layer-input-get network))
+							   (- (slot-source-get move) 1))))
+	(format #t "Setting move ~a to node ~a\n" (inspect move) (inspect target-node))
+	(move-set! target-node move))
+	)
 
 (define-method (nn-network-set! (network <nn-network-klondike>) (move <move-deal>) (game <game>))
   (clear! (layer-input-get network))
@@ -747,7 +759,9 @@
           (any-slot-nonempty? (cdr slots)))))
 
 (define (get-hint)
-  (delayed-call report)
+  (let ((game (make <game> #:tableau tableau #:foundation foundation #:waste waste)))
+	(delayed-call (lambda () (evaluate game (randomize! (nn-network-klondike game)) 100))))
+  
   (or (or-map is-ace? (cons waste tableau))
       (or-map shiftable-iter tableau)
       (and (not (empty-slot? waste))
