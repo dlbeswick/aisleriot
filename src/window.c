@@ -1626,6 +1626,10 @@ game_exception_cb (AisleriotGame *game,
                    const GError *error,
                    AisleriotWindow *window)
 {
+#if 1
+  /////// DON'T COMMIT
+    g_printerr ("Aisleriot " VERSION " scheme exception occurred\n-- 8< --\n%s\n-- >8 --\n", error->message);
+#else
   GtkWidget *dialog;
 
   g_return_if_fail (error != NULL);
@@ -1659,6 +1663,7 @@ game_exception_cb (AisleriotGame *game,
                           (GDestroyNotify) g_error_free);
 
   gtk_widget_show (dialog);
+#endif
 }
 
 #if defined(ENABLE_SOUND)
