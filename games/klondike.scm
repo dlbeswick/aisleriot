@@ -49,45 +49,54 @@
 (define stock 0)
 (define waste 1)
 
-(define (evaluate game network steps)
-  (cond
-   ((game-won) (display "Won!\n") (format #t "\nNETWORK:\n~a\n\n" (inspect network)) #t)
-   ((= 0 steps) (display "Remaining steps expired\n") (meta-new-game) (evaluate game (randomize! (nn-network-klondike game)) 100))
-   (else
-	(let* ((gs (make <game-state> #:game game)))
-	  (format #t "Step ~a\n" steps)
-	  (display "\nALL CARDS\n")
-	  
-	  (let f ((slots (slots-all game)))
-		(unless (null? slots)
-		  (format #t "Slot ~a: ~a\n" (car slots) (get-slot (car slots)))
-		  (f (cdr slots))))
-	  
-	  (format #t "\nALL VALID MOVES\n")
-	  (let ((moves '()))
-		(moves-valid
-		 gs
-		 (lambda (m)
-		   (format #t "~a\n" (inspect m))
-		   (set! moves (cons m moves))))
+(define nn-population-size 5)
+(define nn-combine-chance 0.5)
+(define nn-mutation-chance 0.25)
+
+(assert (>= nn-population-size 2))
+
+(define (evaluate game evaluated-networks pending-networks steps)
+  (let ((network (car pending-networks)))
+	(fitness-set! network steps)
+	(cond
+	 ((game-won) (display "Won!\n") (format #t "\nNETWORK:\n~a\n\n" (inspect network)) #t)
+	 ((= 0 steps) (display "Remaining steps expired\n") (meta-new-game) (evaluate game (randomize! (nn-network-klondike game)) 100))
+	 (else
+	  (let* ((gs (make <game-state> #:game game)))
+		(format #t "Step ~a\n" steps)
+		(display "\nALL CARDS\n")
 		
-		(let ((evals (map (lambda (m)
-							(format #t "Try move on network: ~a\n" (inspect m))
-							(nn-network-set! network m game)
+		(let f ((slots (slots-all game)))
+		  (unless (null? slots)
+			(format #t "Slot ~a: ~a\n" (car slots) (get-slot (car slots)))
+			(f (cdr slots))))
+		
+		(format #t "\nALL VALID MOVES\n")
+		(let ((moves '()))
+		  (moves-valid
+		   gs
+		   (lambda (m)
+			 (format #t "~a\n" (inspect m))
+			 (set! moves (cons m moves))))
+		  
+		  (let ((evals (map (lambda (m)
+							  (format #t "Try move on network: ~a\n" (inspect m))
+							  (nn-network-set! network m game)
 ;;;						  (format #t "\nNETWORK:\n~a\n\n" (inspect network))
-							(cons m (success-probability network))
-							)
-						  (reverse moves))))
-		  (let ((by-score (sort evals (lambda (ala alb) (> (cdr ala) (cdr alb))))))
-			(for-each (lambda (al) (format #t "Success chance for move ~a: ~a\n" (inspect (car al)) (cdr al))) by-score)
-			(execute gs (caar by-score))))
-		
-		(delayed-call (lambda () (evaluate game network (1- steps))))
+							  (cons m (success-probability network))
+							  )
+							(reverse moves))))
+			(let ((by-score (sort evals (lambda (ala alb) (> (cdr ala) (cdr alb))))))
+			  (for-each (lambda (al) (format #t "Success chance for move ~a: ~a\n" (inspect (car al)) (cdr al))) by-score)
+			  (execute gs (caar by-score))))
+		  
+		  (delayed-call (lambda () (evaluate game (cons network evaluated-networks) (cdr pending-networks) (1- steps))))
+		  )
 		)
 	  )
+	 )
 	)
-   )
-)
+  )
 
 ;; Return the next list of lists in the sequence:
 ;; ((1 2 3) (a b))
@@ -140,7 +149,7 @@
 (define-class <nn-link> (<object>)
   (-node-source #:init-keyword #:node-source)
   (-node-dest #:init-keyword #:node-dest)
-  (-weight #:init-value 1.0) ; <real>
+  (-weight #:init-value 1.0 #:init-keyword #:weight) ; <real>
   )
 
 (define-method (inspect (self <nn-link>))
@@ -159,7 +168,7 @@
 
 ;;; Node in a neural network.
 (define-class <nn-node> (<object>)
-  (-id #:init-keyword #:id)
+  (-id #:init-keyword #:id #:getter id-get)
   )
 
 (define-method (inspect (self <nn-node>))
@@ -170,7 +179,6 @@
 
 (define-method (-display (self <nn-node>))
   (format #f "~a" (slot-ref self '-id)))
-
 
 ;;; Node that accepts links.
 (define-class <nn-node-consumer> (<nn-node>)
@@ -226,10 +234,9 @@
 		  "<nn-layer nodes: ~a>"
 		  (map inspect (nodes-get self))))
 
-;; Ideally shouldn't need this method. Use overrides of the network class and layer classes instead.
-;; Refer to data using fields, not strings.
-;(define-method (node-by-id id)
-;  (find (lambda (n) (equal? (get-id n))) (nodes-get self)))
+(define-method (node-by-id id)
+  (or (find (lambda (n) (equal? (get-id n))) (nodes-get self))
+	  (throw '-nn-layer-no-node id)))
 
 ;; layer1 should be a layer full of node-consumers
 (define-method (fully-connect! (layer0 <nn-layer>) (layer1 <nn-layer>))
@@ -258,6 +265,18 @@
   (-layer-input #:init-keyword #:layer-input #:getter layer-input-get)
   (-layers-hidden #:init-keyword #:layers-hidden #:getter layers-hidden-get)
   (-layer-output #:init-keyword #:layer-output  #:getter layer-output-get)
+  (-fitness #:init-value 0.0 #:getter fitness-get #:setter fitness-set!)
+  )
+
+(define-method (layers-all-get (self <nn-network>))
+  (append (list (layer-input-get self)) (layers-hidden-get self) (list (layer-output-get self))))
+
+(define-method (fully-connect! (self <nn-network>))
+  (let connect ((li (layers-all-get self)))
+	(cond ((null? (cdr li)) #nil)
+		  (else (fully-connect! (car li) (cadr li))
+				(connect (cdr li)))))
+  self
   )
 
 (define-method (inspect (self <nn-network>))
@@ -286,18 +305,14 @@
 								  )))
 				  out)
 				 (1- i)))))
-		 (layers-all (append (list layer-input) layers-hidden (list layer-output)))
 		 )
-	(let connect ((li layers-all))
-	  (cond ((null? (cdr li)) #nil)
-			(else (fully-connect! (car li) (cadr li))
-				  (connect (cdr li)))))
-	(make class
-	  #:layer-input layer-input
-	  #:layers-hidden layers-hidden
-	  #:layer-output layer-output)
-	)
-  )
+	(fully-connect!
+	 (make class
+	   #:layer-input layer-input
+	   #:layers-hidden layers-hidden
+	   #:layer-output layer-output)
+	 )
+	))
 
 (define-method (randomize! (self <nn-network>))
   (let each-layer ((ilayers (append (layers-hidden-get self) (list (slot-ref self '-layer-output)))))
@@ -490,6 +505,51 @@
 				(slot-set! self '-value result)
 				result))))
 
+(define-method (nn-combine (n0 <number>) (n1 <number>))
+  (if (<= (random 1.0) 0.5) n0 n1))
+
+(define-method (nn-combine (link0 <nn-link>) (link1 <nn-link>) (layer-new <nn-layer>))
+  (assert (equal? (class-of link0) (class-of link1)))
+  (make (class-of link0)
+	#:weight (nn-combine (slot-ref link0 -weight) (slot-ref link1 -weight)))
+  )
+
+(define-method (nn-combine (node0 <nn-node>) (node1 <nn-node>))
+  (assert (equal? (id-get node0) (id-get node1)))
+  (assert (equal? (class-of node0) (class-of node1)))
+  (make (class-of node0)
+	#:id (id-get node0))
+  )
+
+(define-method (nn-combine (node0 <nn-node-consumer>) (node1 <nn-node-consumer>))
+  (let ((node (next-method)))
+	(slot-set! node '-links-in (nn-combine (links-in-get node0) (links-in-get node1)))))
+
+(define-method (nn-combine (layer0 <nn-layer>) (layer1 <nn-layer>))
+  (assert (equal? (class-of layer0) (class-of layer1)))
+  (assert (equal? (length (nodes-get layer0)) (length (nodes-get layer1))))
+  (make (class-of layer0) #:nodes (fold nn-combine '() (nodes-get layer0) (nodes-get layer1))))
+
+(define-method (nn-combine (network0 <nn-network>) (network1 <nn-network>))
+  (assert (equal? (class-of network0) (class-of network1)))
+  (fully-connect!
+   (make (class-of network0)
+	 #:layer-input (nn-combine (layer-input-get network0) (layer-input-get network1))
+	 #:layers-hidden (fold nn-combine '() (layers-hidden-get network0) (layers-hidden-get network1))
+	 #:layer-output (nn-combine (layer-output-get network0) (layer-output-get network1))))
+  )
+
+(define (best-combinations networks)
+  (assert (>= 2 (length networks)))
+  (list-head (sort networks (lambda (a b) (> (fitness-get a) (fitness-get b)))) 2))
+
+(define-method (on-evaluation-complete (network <nn-network>) game evaluated-networks population-size)
+  (format #t "Network fitness is ~a\n" (fitness-get network))
+  (if (= nn-population-size (length evaluated-networks))
+	  (evaluate game (apply nn-combine (best-combinations evaluated-networks) '())
+	  (cons network evaluated-networks))))
+
+
 ;;; Klondike
 (define-class <nn-network-klondike> (<nn-network>)
   )
@@ -498,9 +558,13 @@
   (value-get (car (nodes-get (layer-output-get self)))))
 
 (define-class <nn-layer-input-klondike> (<nn-layer>)
-  (-nodes-slots #:init-keyword #:nodes-slots #:getter nodes-slots-get)
-  (-node-deal #:init-keyword #:node-deal #:getter node-deal-get)
   )
+
+(define-method (nodes-slots-get (self <nn-layer-input-klondike>))
+  (filter (lambda (n) (string-contains (id-get n) "-slot-") (nodes-get (layer-input-get self)))))
+
+(define-method (nodes-deal-get (self <nn-layer-input-klondike>))
+  (filter (lambda (n) (equal? (id-get n) "input-deal") (nodes-get (layer-input-get self)))))
 
 (define-method (nn-make-input-layer (game <game>))
   (let ((node-per-slot
@@ -759,8 +823,10 @@
           (any-slot-nonempty? (cdr slots)))))
 
 (define (get-hint)
-  (let ((game (make <game> #:tableau tableau #:foundation foundation #:waste waste)))
-	(delayed-call (lambda () (evaluate game (randomize! (nn-network-klondike game)) 100))))
+  (let ((game (make <game> #:tableau tableau #:foundation foundation #:waste waste))
+		(networks (map (lambda () (randomize! (nn-network-klondike game))) (iota nn-population-size)))
+		)
+	(delayed-call (lambda () (evaluate game (car networks) (cdr networks) 100))))
   
   (or (or-map is-ace? (cons waste tableau))
       (or-map shiftable-iter tableau)
