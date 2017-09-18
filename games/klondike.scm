@@ -56,19 +56,33 @@
 
 (assert (>= nn-population-size 2))
 
+(define (evaluate-next game evaluated-networks pending-networks steps generation)
+  (meta-new-game)
+  (let ((network (car pending-networks)))
+	(if (null? (cdr pending-networks))
+		(begin
+		  (evaluate game '() (nn-evolve-population (cons network evaluated-networks)) 0 (1+ generation)))
+		(evaluate game (cons network evaluated-networks) (cdr pending-networks) 0 (1+ generation))))
+)
+
 (define (evaluate game evaluated-networks pending-networks steps generation)
   (format #t "GENERATION: ~a\n" generation)
   (let ((network (car pending-networks)))
-	(fitness-set! network (- nn-max-moves steps))
+	(let ((fitness (fitness network game steps)))
+	  (format #t " fitness: ~a\n" fitness)
+	  (fitness-set! network fitness)
+	  )
 	(cond
-	 ((game-won) (display "Won!\n") (format #t "\nNETWORK:\n~a\n\n" (inspect network)) #t)
-	 ((= 0 steps) (begin
-					(display "Remaining steps expired\n")
-					(meta-new-game)
-					(if (null? (cdr pending-networks))
-						(begin
-						  (evaluate game '() (nn-evolve-population (cons network evaluated-networks)) nn-max-moves (1+ generation)))
-						(evaluate game (cons network evaluated-networks) (cdr pending-networks) nn-max-moves (1+ generation)))))
+;	 ((game-over)
+;	  (display "Game lost\n")
+;	  (evaluate-next game evaluated-networks pending-networks steps generation)
+;	  #t)
+	 ((game-won)
+	  (display "Won!\n")
+	  (format #t "\nNETWORK:\n~a\n\n" (inspect network)) #t)
+	 ((= nn-max-moves steps)
+	  (display "Remaining steps expired\n")
+	  (evaluate-next game evaluated-networks pending-networks steps generation))
 	 (else
 	  (let* ((gs (make <game-state> #:game game)))
 		(format #t "Step ~a\n" steps)
@@ -99,7 +113,7 @@
 				(for-each (lambda (al) (format #t "Success chance for move ~a: ~a\n" (inspect (car al)) (cdr al))) by-score)
 				(execute gs (caar by-score))))))
 			
-		(delayed-call (lambda () (evaluate game evaluated-networks pending-networks (1- steps) generation)))
+		(delayed-call (lambda () (evaluate game evaluated-networks pending-networks (1+ steps) generation)))
 		)
 	  )
 	 )
@@ -409,7 +423,7 @@
 					   (slot-dest-get self)
 					   (slot-source-card-idx-get self))
 				 (fold append '() (map -nn-card-encode (card-list-get self))))))
-	(hash-djb (uint-list->bytevector encoded-list (native-endianness) 4))))
+	(/ (hash-djb (uint-list->bytevector encoded-list (native-endianness) 4)) #xFFFFFFFF)))
 		
 ;;; Get the list of cards that would be picked up by the player for this move.
 ;;; '() if no cards could be picked up.
@@ -437,9 +451,9 @@
 
 ;;; Information relating to game rules
 (define-class <game> (<object>)
-  (-tableau #:init-keyword #:tableau)
-  (-foundation #:init-keyword #:foundation)
-  (-waste #:init-keyword #:waste))
+  (-tableau #:init-keyword #:tableau #:getter tableau-get)
+  (-foundation #:init-keyword #:foundation #:getter foundation-get)
+  (-waste #:init-keyword #:waste #:getter waste-get))
 
 (define-method (slots-all (self <game>))
   (append (slot-ref self '-tableau)
@@ -582,6 +596,11 @@
 
 ;;; Klondike
 (define-class <nn-network-klondike> (<nn-network>)
+  )
+
+(define-method (fitness (self <nn-network-klondike>) (game <game>) (steps-elapsed <integer>))
+  (apply + (- nn-max-moves steps-elapsed)
+		 (map (lambda (slot) (* 5 (length (get-cards slot)))) (foundation-get game)))
   )
 
 (define-method (success-probability (self <nn-network-klondike>))
@@ -856,7 +875,7 @@
   (let* ((game (make <game> #:tableau tableau #:foundation foundation #:waste waste))
 		 (networks (map (lambda (n) (randomize! (nn-network-klondike game))) (iota nn-population-size)))
 		 )
-	(delayed-call (lambda () (evaluate game '() networks nn-max-moves 0))))
+	(delayed-call (lambda () (evaluate game '() networks 0 0))))
   
   (or (or-map is-ace? (cons waste tableau))
       (or-map shiftable-iter tableau)
