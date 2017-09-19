@@ -51,7 +51,7 @@
 
 ;;; NN setup
 
-(define nn-population-size 50)
+(define nn-population-size 1000)
 (define nn-combine-chance 0.5)
 (define nn-mutation-chance 0.001)
 (define nn-max-moves 100)
@@ -68,7 +68,8 @@
 			   (generate-name (1- nclusters))))))
 
 ;;; Observations:
-;;; Each population member has new game
+;;; Each population member has new game.
+;;; Successive generations bred by two fittest.
 ;;;  Max moves 100
 ;;;   Population size 5
 ;;;    Mutation 0.1, combine 0.5, did not improve fitness after 1000 generations. 
@@ -78,6 +79,9 @@
 ;;;    Mutation 0.01, combine 0.5, after 13 generations best fitness was 40.
 ;;;   Population size 50
 ;;;    Mutation 0.001, combine 0.5, after 13 generations best fitness was 30. Highest seen was 50.
+;;;    Mutation 0.001, combine 0.5, after 269 generations best fitness was 30. Highest seen was 50.
+;;; New parent selection, aiming for greater diversity.
+;;;    Mutation 0.001, combine 0.5, pop size 1000
 
 (assert (>= nn-population-size 2))
 
@@ -653,18 +657,27 @@
 	result
   ))
 
-(define (nn-best networks)
+(define (nn-by-best networks)
   (sort networks (lambda (a b) (> (fitness-get a) (fitness-get b)))))
 
+;;; networks should be ordered by fitness
+(define (nn-select-parents networks probability ndesired)
+  (let f ((out '()) (ln networks) (p probability))
+	(cond ((= (length out) ndesired) (reverse out))
+		  ((null? ln) (list-head networks ndesired))
+		  ((<= (random 1.0) p) (f (cons (car ln) out) (cdr ln) (* p p)))
+		  (else (f (cons (car ln) out) (cdr ln) p)))))
+
 (define-method (nn-evolve-population evaluated-networks)
-  (let ((best (nn-best evaluated-networks)))
+  (let ((best (nn-by-best evaluated-networks)))
 	(assert (>= (length best) 2))
-	(format #t "INSPECTION OF BEST:\n~a\n" (map inspect (list-head best 2)))
+	(format #t "INSPECTION OF BEST:\n~a\n"
+			(fold (lambda (a b) (string-append (inspect a) "\n" (inspect b))) "" (list-head best 2)))
 	(format #t "EVOLVE POPULATION:\n Final fitnesses: ~a\n Average fitness: ~a\n\n"
 			(map (lambda (nn) (cons (name-get nn) (fitness-get nn))) best)
-			(/ (apply + (map fitness-get best)) (length best))
+			(exact->inexact (/ (apply + (map fitness-get best)) (length best)))
 			)
-	(map (lambda (n) (nn-combine (car best) (cadr best))) evaluated-networks)))
+	(map (lambda (n) (apply nn-combine (nn-select-parents best 0.95 2))) evaluated-networks)))
 
 
 ;;; Klondike
