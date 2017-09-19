@@ -49,34 +49,60 @@
 (define stock 0)
 (define waste 1)
 
-(define nn-population-size 5)
+;;; NN setup
+
+(define nn-population-size 50)
 (define nn-combine-chance 0.5)
-(define nn-mutation-chance 0.1)
+(define nn-mutation-chance 0.001)
 (define nn-max-moves 100)
+
+(define vowels (string->char-set "aeiou"))
+(define consonants (char-set-difference
+					(char-set-intersection char-set:lower-case char-set:ascii)
+					  vowels))
+(define (charset-random-char charset) (list-ref (char-set->list charset) (random (char-set-size charset))))
+(define (generate-name nclusters)
+  (cond ((= 0 nclusters) "")
+		(else (string-append
+			   (string (charset-random-char vowels) (charset-random-char consonants))
+			   (generate-name (1- nclusters))))))
+
+;;; Observations:
+;;; Each population member has new game
+;;;  Max moves 100
+;;;   Population size 5
+;;;    Mutation 0.1, combine 0.5, did not improve fitness after 1000 generations. 
+;;;    Mutation 0.1, combine 0.3333, did not improve fitness after 1000 generations. 
+;;;    Mutation 0.01, combine 0.5, did not improve fitness after 1000 generations. 
+;;;   Population size 100
+;;;    Mutation 0.01, combine 0.5, after 13 generations best fitness was 40.
+;;;   Population size 50
+;;;    Mutation 0.001, combine 0.5, after 13 generations best fitness was 30. Highest seen was 50.
 
 (assert (>= nn-population-size 2))
 
 (define (evaluate-next game evaluated-networks pending-networks steps generation)
   (meta-new-game)
   (let ((network (car pending-networks)))
+	(format #t "GENERATION: ~a candidates remaining: ~a tested: '~a' had fitness ~a\n"
+			generation (length pending-networks) (name-get network) (fitness-get network))
 	(if (null? (cdr pending-networks))
 		(begin
 		  (evaluate game '() (nn-evolve-population (cons network evaluated-networks)) 0 (1+ generation)))
-		(evaluate game (cons network evaluated-networks) (cdr pending-networks) 0 (1+ generation))))
+		(evaluate game (cons network evaluated-networks) (cdr pending-networks) 0 generation)))
 )
 
 (define (evaluate game evaluated-networks pending-networks steps generation)
-  (format #t "GENERATION: ~a\n" generation)
   (let ((network (car pending-networks)))
-	(let ((fitness (fitness network game steps)))
-	  (format #t " fitness: ~a\n" fitness)
+	(let ((fitness (fitness-eval network game steps)))
+;;;	  (format #t " fitness: ~a\n" fitness)
 	  (fitness-set! network fitness)
 	  )
 	(cond
-;	 ((game-over)
-;	  (display "Game lost\n")
-;	  (evaluate-next game evaluated-networks pending-networks steps generation)
-;	  #t)
+;;;	 ((game-over)
+;;;	  (display "Game lost\n")
+;;;	  (evaluate-next game evaluated-networks pending-networks steps generation)
+;;;	  #t)
 	 ((game-won)
 	  (display "Won!\n")
 	  (format #t "\nNETWORK:\n~a\n\n" (inspect network)) #t)
@@ -85,32 +111,32 @@
 	  (evaluate-next game evaluated-networks pending-networks steps generation))
 	 (else
 	  (let* ((gs (make <game-state> #:game game)))
-		(format #t "Step ~a\n" steps)
-		(display "\nALL CARDS\n")
+;;;		(format #t "Step ~a\n" steps)
+;;;		(display "\nALL CARDS\n")
 		
-		(let f ((slots (slots-all game)))
-		  (unless (null? slots)
-			(format #t "Slot ~a: ~a\n" (car slots) (get-slot (car slots)))
-			(f (cdr slots))))
+;;;		(let f ((slots (slots-all game)))
+;;;		  (unless (null? slots)
+;;;			(format #t "Slot ~a: ~a\n" (car slots) (get-slot (car slots)))
+;;;			(f (cdr slots))))
 		
-		(format #t "\nALL VALID MOVES\n")
+;;;		(format #t "\nALL VALID MOVES\n")
 		(let ((moves '()))
 		  (moves-valid
 		   gs
 		   (lambda (m)
-			 (format #t "~a\n" (inspect m))
+;;;			 (format #t "~a\n" (inspect m))
 			 (set! moves (cons m moves))))
 		  
 		  (unless (null? moves)
 			(let ((evals (map (lambda (m)
-								(format #t "Try move on network: ~a\n" (inspect m))
+;;;								(format #t "Try move on network: ~a\n" (inspect m))
 								(nn-network-set! network m game)
 ;;;						  (format #t "\nNETWORK:\n~a\n\n" (inspect network))
 								(cons m (success-probability network))
 								)
 							  (reverse moves))))
 			  (let ((by-score (sort evals (lambda (ala alb) (> (cdr ala) (cdr alb))))))
-				(for-each (lambda (al) (format #t "Success chance for move ~a: ~a\n" (inspect (car al)) (cdr al))) by-score)
+;;;				(for-each (lambda (al) (format #t "Success chance for move ~a: ~a\n" (inspect (car al)) (cdr al))) by-score)
 				(execute gs (caar by-score))))))
 			
 		(delayed-call (lambda () (evaluate game evaluated-networks pending-networks (1+ steps) generation)))
@@ -173,6 +199,23 @@
   (-layers-hidden #:init-keyword #:layers-hidden #:getter layers-hidden-get)
   (-layer-output #:init-keyword #:layer-output  #:getter layer-output-get)
   (-fitness #:init-value 0.0 #:getter fitness-get #:setter fitness-set!)
+  (-name-first #:init-form (generate-name (+ 1 (random 4)))
+			   #:init-keyword #:name-first #:getter name-first-get #:setter name-first-set!)
+  (-name-last #:init-form (generate-name (+ 1 (random 4)))
+			  #:init-keyword #:name-last #:getter name-last-get #:setter name-last-set!)
+  )
+
+(define-method (name-get (self <nn-network>))
+  (string-append (name-first-get self) " " (name-last-get self)))
+
+(define-method (inspect (self <nn-network>))
+  (format #f
+		  "<nn-network ~a\n input: ~a\n hidden: ~a\n output: ~a>"
+		  (name-get self)
+		  (inspect (slot-ref self '-layer-input) self)
+		  (map (lambda (l) (inspect l self)) (layers-hidden-get self))
+		  (inspect (layer-output-get self) self)
+		  )
   )
 
 ;;; Connection between neural network nodes.
@@ -291,13 +334,6 @@
   (for-each (lambda (n) (clear! n)) (nodes-get self)))
 
 ;;; Neural network
-(define-class <nn-network> (<object>)
-  (-layer-input #:init-keyword #:layer-input #:getter layer-input-get)
-  (-layers-hidden #:init-keyword #:layers-hidden #:getter layers-hidden-get)
-  (-layer-output #:init-keyword #:layer-output  #:getter layer-output-get)
-  (-fitness #:init-value 0.0 #:getter fitness-get #:setter fitness-set!)
-  )
-
 (define-method (node-by-id (self <nn-network>) id)
   (let f ((llayers (layers-all-get self)))
 	(cond ((null? llayers) (throw '-nn-layer-no-node id))
@@ -312,15 +348,6 @@
 		  (else (fully-connect! (car li) (cadr li))
 				(connect (cdr li)))))
   self
-  )
-
-(define-method (inspect (self <nn-network>))
-  (format #f
-		  "<nn-network\n input: ~a\n hidden: ~a\n output: ~a>"
-		  (inspect (slot-ref self '-layer-input) self)
-		  (map (lambda (l) (inspect l self)) (layers-hidden-get self))
-		  (inspect (layer-output-get self) self)
-		  )
   )
 
 (define (nn-network-fully-connected class layer-input nhiddenlayers nhiddennodes nodes-outputs)
@@ -499,7 +526,7 @@
   (let* ((srccards (card-list-get move))
 		 (newsrccards (list-tail (get-cards (slot-source-get move)) (length srccards)))
 		 (newdstcards (append srccards (get-cards (slot-dest-get move)))))
-	(format #t "card move: ~a srccards: ~a newsrc: ~a newdst: ~a\n" move srccards newsrccards newdstcards)
+;;;	(format #t "card move: ~a srccards: ~a newsrc: ~a newdst: ~a\n" move srccards newsrccards newdstcards)
 	;; Remove cards from source slot
 	(set-cards-c! (slot-source-get move) newsrccards)
 	;; Put cards in dest slot
@@ -543,10 +570,43 @@
 				(slot-set! self '-value result)
 				result))))
 
+(define-method (mutation-factor (p0 <number>) (p1 <number>) (c <number>))
+  (if (or (= p0 c) (= p1 c)) 0.0 1.0))
+
+(define-method (mutation-factor (p0 <nn-link>) (p1 <nn-link>) (c <nn-link>))
+  (mutation-factor (slot-ref p0 '-weight) (slot-ref p1 '-weight) (slot-ref c '-weight)))
+
+(define-method (mutation-factor (p0 <nn-node>) (p1 <nn-node>) (c <nn-node>))
+  0.0)
+
+(define-method (mutation-factor (p0 <nn-node-consumer>) (p1 <nn-node-consumer>) (c <nn-node-consumer>))
+  (if (null? (links-in-get p0)) 0.0
+	  (/ (fold (lambda (ep0 ep1 ec acc) (+ acc (mutation-factor ep0 ep1 ec)))
+			   0.0
+			   (links-in-get p0)
+			   (links-in-get p1)
+			   (links-in-get c))
+		 (length (links-in-get p0)))))
+
+(define-method (mutation-factor (p0 <nn-layer>) (p1 <nn-layer>) (c <nn-layer>))
+  (/ (fold (lambda (ep0 ep1 ec acc) (+ acc (mutation-factor ep0 ep1 ec)))
+		   0.0
+		   (nodes-get p0)
+		   (nodes-get p1)
+		   (nodes-get c))
+	 (length (nodes-get p0))))
+
+(define-method (mutation-factor (p0 <nn-network>) (p1 <nn-network>) (c <nn-network>))
+  (/ (fold (lambda (ep0 ep1 ec acc) (+ acc (mutation-factor ep0 ep1 ec)))
+		   0.0
+		   (layers-all-get p0)
+		   (layers-all-get p1)
+		   (layers-all-get c))
+	 (length (layers-all-get p0))))
+
 (define-method (nn-combine (n0 <number>) (n1 <number>))
-  (if (<= (random 1.0) nn-mutation-chance)
-	  (random 1.0)
-	  (if (<= (random 1.0) nn-combine-chance) n0 n1)))
+  (if (<= (random 1.0) nn-mutation-chance) (random 1.0)
+	  (if (<= (random 1.0) nn-combine-chance) n1 n0)))
 
 (define-method (nn-combine (link0 <nn-link>) (link1 <nn-link>))
   (assert (equal? (class-of link0) (class-of link1)))
@@ -577,13 +637,21 @@
 	#:nodes (reverse (fold (lambda (a b r) (cons (nn-combine a b) r)) '() (nodes-get layer0) (nodes-get layer1))))
   )
 
+;;; The better network should be passed to network0
 (define-method (nn-combine (network0 <nn-network>) (network1 <nn-network>))
   (assert (equal? (class-of network0) (class-of network1)))
-  (make (class-of network0)
+  (let ((result (make (class-of network0)
 	#:layer-input (nn-combine (layer-input-get network0) (layer-input-get network1))
 	#:layers-hidden (reverse (fold (lambda (a b r) (cons (nn-combine a b) r)) '() (layers-hidden-get network0) (layers-hidden-get network1)))
-	#:layer-output (nn-combine (layer-output-get network0) (layer-output-get network1)))
-  )
+	#:layer-output (nn-combine (layer-output-get network0) (layer-output-get network1))
+	)))
+
+	;; Give the network the last name of its best parent. If it was significantly mutated, give it a new last name.
+	(if (= 0 (mutation-factor network0 network1 result))
+		(name-last-set! result (name-last-get network0)))
+	
+	result
+  ))
 
 (define (nn-best networks)
   (sort networks (lambda (a b) (> (fitness-get a) (fitness-get b)))))
@@ -591,6 +659,11 @@
 (define-method (nn-evolve-population evaluated-networks)
   (let ((best (nn-best evaluated-networks)))
 	(assert (>= (length best) 2))
+	(format #t "INSPECTION OF BEST:\n~a\n" (map inspect (list-head best 2)))
+	(format #t "EVOLVE POPULATION:\n Final fitnesses: ~a\n Average fitness: ~a\n\n"
+			(map (lambda (nn) (cons (name-get nn) (fitness-get nn))) best)
+			(/ (apply + (map fitness-get best)) (length best))
+			)
 	(map (lambda (n) (nn-combine (car best) (cadr best))) evaluated-networks)))
 
 
@@ -598,7 +671,7 @@
 (define-class <nn-network-klondike> (<nn-network>)
   )
 
-(define-method (fitness (self <nn-network-klondike>) (game <game>) (steps-elapsed <integer>))
+(define-method (fitness-eval (self <nn-network-klondike>) (game <game>) (steps-elapsed <integer>))
   (apply + (- nn-max-moves steps-elapsed)
 		 (map (lambda (slot) (* 5 (length (get-cards slot)))) (foundation-get game)))
   )
@@ -644,7 +717,7 @@
   (clear! (layer-input-get network))
   (let ((target-node (list-ref (nodes-slots-get (layer-input-get network))
 							   (- (slot-source-get move) 1))))
-	(format #t "Setting move ~a to node ~a\n" (inspect move) (inspect target-node network))
+;;;	(format #t "Setting move ~a to node ~a\n" (inspect move) (inspect target-node network))
 	(move-set! target-node move))
 	)
 
@@ -872,6 +945,8 @@
           (any-slot-nonempty? (cdr slots)))))
 
 (define (get-hint)
+  (set! *random-state* (random-state-from-platform))
+  
   (let* ((game (make <game> #:tableau tableau #:foundation foundation #:waste waste))
 		 (networks (map (lambda (n) (randomize! (nn-network-klondike game))) (iota nn-population-size)))
 		 )

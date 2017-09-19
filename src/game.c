@@ -37,7 +37,7 @@
 #include "game.h"
 
 // DLB: TEMPORARY, DO NOT COMMIT
-#define DELAYED_CALLBACK_DELAY (10)
+#define DELAYED_CALLBACK_DELAY (1)
 
 #define I_(string) g_intern_static_string (string)
 
