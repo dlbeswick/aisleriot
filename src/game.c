@@ -60,6 +60,7 @@ enum {
   TIMEOUT_LAMBDA,
   DROPPABLE_LAMBDA,
   DEALABLE_LAMBDA,
+  AUTOPLAY_LAMBDA,
   N_LAMBDAS,
   LAST_MANDATORY_LAMBDA = TIMEOUT_LAMBDA
 };
@@ -78,6 +79,7 @@ static const char lambda_names[] = {
   "timeout\0"
   "droppable\0"
   "dealable\0"
+  "autoplay\0"
 };
 
 struct _AisleriotGame
@@ -109,7 +111,7 @@ struct _AisleriotGame
   guint can_redo : 1;
   guint can_deal : 1;
   guint show_score : 1;
-  guint features : 3; /* enough bits for ALL_FEATURES */
+  guint features : 4; /* enough bits for ALL_FEATURES */
   guint state : 3; /* enough bits for LAST_GAME_STATE */
   guint had_exception : 1;
   guint paused : 1;
@@ -900,6 +902,13 @@ scm_set_lambda (SCM start_game_lambda,
     game->lambdas[DEALABLE_LAMBDA] = SCM_UNDEFINED;
   }
 
+  if (game->features & FEATURE_AUTOPLAY) {
+    game->lambdas[AUTOPLAY_LAMBDA] = SCM_CAR (rest);
+    rest = SCM_CDR (rest);
+  } else {
+    game->lambdas[AUTOPLAY_LAMBDA] = SCM_UNDEFINED;
+  }
+  
   return SCM_EOL;
 }
 
@@ -1053,6 +1062,13 @@ scm_meta_new_game (void)
   return SCM_BOOL_T;
 }
 
+static SCM
+scm_meta_restart_game (void)
+{
+  aisleriot_game_restart_game(app_game);
+  return SCM_BOOL_T;
+}
+
 static void
 cscm_init (void *data G_GNUC_UNUSED)
 {
@@ -1064,7 +1080,7 @@ cscm_init (void *data G_GNUC_UNUSED)
   scm_c_define_gsubr ("reset-surface", 0, 0, 0, scm_reset_surface);
   scm_c_define_gsubr ("add-slot", 1, 0, 0, cscmi_add_slot);
   scm_c_define_gsubr ("get-slot", 1, 0, 0, scm_get_slot);
-  scm_c_define_gsubr ("is-slot-expanded", 1, 0, 0, scm_is_slot_expanded);
+  scm_c_define_gsubr ("is-slot-expanded?", 1, 0, 0, scm_is_slot_expanded);
   scm_c_define_gsubr ("set-cards-c!", 2, 0, 0, scm_set_cards);
   scm_c_define_gsubr ("set-slot-y-expansion!", 2, 0, 0,
                       scm_set_slot_y_expansion);
@@ -1083,6 +1099,7 @@ cscm_init (void *data G_GNUC_UNUSED)
   scm_c_define_gsubr ("dealable-set-sensitive", 1, 0, 0, scm_dealable_set_sensitive);
   scm_c_define_gsubr ("meta-deal", 0, 0, 0, scm_meta_deal);
   scm_c_define_gsubr ("meta-new-game", 0, 0, 0, scm_meta_new_game);
+  scm_c_define_gsubr ("meta-restart-game", 0, 0, 0, scm_meta_restart_game);
 
   scm_c_export ("set-feature-word!", 
                 "get-feature-word", 
@@ -1090,7 +1107,7 @@ cscm_init (void *data G_GNUC_UNUSED)
                 "reset-surface",
                 "add-slot", 
                 "get-slot", 
-                "is-slot-expanded", 
+                "is-slot-expanded?", 
                 "set-cards-c!",
                 "set-slot-y-expansion!", 
                 "set-slot-x-expansion!",
@@ -1107,6 +1124,7 @@ cscm_init (void *data G_GNUC_UNUSED)
                 "dealable-set-sensitive",
 				"meta-deal",
 				"meta-new-game",
+				"meta-restart-game",
                 NULL);
 }
 
@@ -1678,10 +1696,6 @@ game_scm_load_game (void *user_data)
 
   scm_dynwind_begin (0);
 
-  /* Activate recording of "source properties" in loaded file to enable line
-	 numbers in backtraces. Helpful when developing games. NOT WORKING */
-  scm_c_eval_string ("(read-enable 'positions)");
-  
   scm_primitive_load_path (scm_from_utf8_string (game_module));
 
   for (i = 0; i <= LAST_MANDATORY_LAMBDA; ++i) {
@@ -2254,6 +2268,11 @@ aisleriot_game_get_hint (AisleriotGame *game)
   scm_dynwind_end ();
 
   return message;
+}
+
+void aisleriot_game_autoplay (AisleriotGame *game)
+{
+  game_scm_call (game->lambdas[AUTOPLAY_LAMBDA], NULL, 0, 0);
 }
 
 /**

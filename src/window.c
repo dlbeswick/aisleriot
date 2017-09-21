@@ -78,6 +78,7 @@ enum
   ACTION_OPTIONS_MENU,
   ACTION_DEAL,
   ACTION_HINT,
+  ACTION_AUTOPLAY,
   ACTION_LEAVE_FULLSCREEN,
   LAST_ACTION
 };
@@ -917,6 +918,14 @@ show_hint_cb (GtkAction *action,
 }
 
 static void
+autoplay_cb (GtkAction *action,
+              AisleriotWindow *window)
+{
+  aisleriot_game_start (window->priv->game);
+  aisleriot_game_autoplay (window->priv->game);
+}
+
+static void
 deal_cb (GtkAction *action,
          AisleriotWindow *window)
 {
@@ -1425,6 +1434,9 @@ sync_game_state (AisleriotGame *game,
   gtk_action_set_sensitive (priv->action[ACTION_HINT],
                             state == GAME_BEGIN || state == GAME_RUNNING);
 
+  gtk_action_set_sensitive (priv->action[ACTION_AUTOPLAY],
+                            state == GAME_BEGIN || state == GAME_RUNNING);
+  
   if (state == GAME_RUNNING) {
     ar_clock_start (AR_CLOCK (priv->clock));
   } else {
@@ -1843,6 +1855,9 @@ aisleriot_window_init (AisleriotWindow *window)
     { "Hint", AR_STOCK_HINT, NULL, NULL,
       N_("Get a hint for your next move"),
       G_CALLBACK (show_hint_cb) },
+    { "Autoplay", AR_STOCK_AUTOPLAY, NULL, NULL,
+      N_("DEV start autoplay"),
+      G_CALLBACK (autoplay_cb) },
     { "Contents", AR_STOCK_CONTENTS, NULL, NULL,
       N_("View help for Aisleriot"),
       G_CALLBACK (help_general_cb) },
@@ -1915,6 +1930,7 @@ aisleriot_window_init (AisleriotWindow *window)
     "OptionsMenu",
     "Deal",
     "Hint",
+    "Autoplay",
     "LeaveFullscreen",
   };
 

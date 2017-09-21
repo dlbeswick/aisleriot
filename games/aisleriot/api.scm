@@ -35,6 +35,7 @@
 (define-public droppable-feature 1)
 (define-public scores-disabled 2)
 (define-public dealable-feature 4)
+(define-public autoplay-feature 8)
 
 (define-public (set-features . feature-list)
   (set-feature-word! (+ (get-feature-word)
@@ -288,7 +289,7 @@
   (caddr card))
 
 (define-public (get-suit card) 
-      (cadr card))
+  (cadr card))
 
 (define-public (get-color card)
   (cond ((eq? (get-suit card) club) black)

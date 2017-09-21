@@ -23,6 +23,7 @@
       <menuitem action="RedoMove"/>
       <menuitem action="Deal"/>
       <menuitem action="Hint"/>
+      <menuitem action="Autoplay"/>
       <separator/>
       <menuitem action="ClickToMove"/>
       <menuitem action="Sound"/>

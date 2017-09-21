@@ -51,7 +51,7 @@
 
 ;;; NN setup
 
-(define nn-population-size 1000)
+(define nn-population-size 10)
 (define nn-combine-chance 0.5)
 (define nn-mutation-chance 0.001)
 (define nn-max-moves 100)
@@ -70,6 +70,7 @@
 ;;; Observations:
 ;;; Each population member has new game.
 ;;; Successive generations bred by two fittest.
+;;; 1 hidden layer having 6 nodes
 ;;;  Max moves 100
 ;;;   Population size 5
 ;;;    Mutation 0.1, combine 0.5, did not improve fitness after 1000 generations. 
@@ -81,22 +82,37 @@
 ;;;    Mutation 0.001, combine 0.5, after 13 generations best fitness was 30. Highest seen was 50.
 ;;;    Mutation 0.001, combine 0.5, after 269 generations best fitness was 30. Highest seen was 50.
 ;;; New parent selection, aiming for greater diversity.
-;;;    Mutation 0.001, combine 0.5, pop size 1000
+;;;    Mutation 0.001, combine 0.5, pop size 1000, after 73 generations best fitness was 60,
+;;;     average was 13.89 (top 14.65)
+;;; Experiment modification: use same game for entire generation.
+;;;  Mutation 0.001, combine 0.5, pop size 100, after 45 generations best fitness was 45, avg 10
+;;; 2 hidden layers having 6 nodes
+;;;  Mutation 0.001, combine 0.5, pop size 100, after 10 generations avg fitness was 10
+;;; 2 hidden layers having 24 nodes
+;;;  Mutation 0.001, combine 0.5, pop size 100, after 10 generations avg fitness was 14.8
+;;;
+;;; Change game state and move encoding. One input group per slot with length, top suit, top value. One input group
+;;;  for move cards, one for deal.
 
 (assert (>= nn-population-size 2))
 
-(define (evaluate-next game evaluated-networks pending-networks steps generation)
-  (meta-new-game)
+(define (evaluate-next game evaluated-networks pending-networks steps generation stats)
   (let ((network (car pending-networks)))
 	(format #t "GENERATION: ~a candidates remaining: ~a tested: '~a' had fitness ~a\n"
 			generation (length pending-networks) (name-get network) (fitness-get network))
 	(if (null? (cdr pending-networks))
 		(begin
-		  (evaluate game '() (nn-evolve-population (cons network evaluated-networks)) 0 (1+ generation)))
-		(evaluate game (cons network evaluated-networks) (cdr pending-networks) 0 generation)))
+		  (meta-new-game)
+		  (let ((stats-new (cons (nn-calc-generation-stats evaluated-networks stats) stats)))
+			(format #t "Stats history: ~a\n" stats-new)
+			(evaluate game '() (nn-evolve-population (cons network evaluated-networks)) 0 (1+ generation) stats-new))
+		  )
+		(begin
+		  (meta-restart-game)
+		  (evaluate game (cons network evaluated-networks) (cdr pending-networks) 0 generation stats))))
 )
 
-(define (evaluate game evaluated-networks pending-networks steps generation)
+(define (evaluate game evaluated-networks pending-networks steps generation stats)
   (let ((network (car pending-networks)))
 	(let ((fitness (fitness-eval network game steps)))
 ;;;	  (format #t " fitness: ~a\n" fitness)
@@ -112,7 +128,7 @@
 	  (format #t "\nNETWORK:\n~a\n\n" (inspect network)) #t)
 	 ((= nn-max-moves steps)
 	  (display "Remaining steps expired\n")
-	  (evaluate-next game evaluated-networks pending-networks steps generation))
+	  (evaluate-next game evaluated-networks pending-networks steps generation stats))
 	 (else
 	  (let* ((gs (make <game-state> #:game game)))
 ;;;		(format #t "Step ~a\n" steps)
@@ -143,7 +159,7 @@
 ;;;				(for-each (lambda (al) (format #t "Success chance for move ~a: ~a\n" (inspect (car al)) (cdr al))) by-score)
 				(execute gs (caar by-score))))))
 			
-		(delayed-call (lambda () (evaluate game evaluated-networks pending-networks (1+ steps) generation)))
+		(delayed-call (lambda () (evaluate game evaluated-networks pending-networks (1+ steps) generation stats)))
 		)
 	  )
 	 )
@@ -289,6 +305,16 @@
 (define-method (clear! (self <nn-node-input>))
   (error "Implementation required"))
 
+(define-class <nn-node-input-real> (<nn-node>)
+  (-value #:init-keyword #:value #:init-value 0.0 #:getter value-get #:setter value-set!)
+  )
+
+(define-method (value-get (self <nn-node-input-real>) (network <nn-network>))
+  (value-get self))
+
+(define-method (clear! (self <nn-node-input-real>))
+  (value-set! self 0.0))
+
 ;;; Output node.
 (define-class <nn-node-output> (<nn-node-consumer>)
   )
@@ -392,6 +418,7 @@
 
 ;;; A potential game move. It need not be valid.
 (define-class <move> (<object>)
+  -game #:init-keyword #:game
   )
 
 (define-method (id-get (self <move>))
@@ -435,82 +462,101 @@
   (format #f
 		  "~a src: ~a src-card: ~a dst: ~a"
 		  (next-method)
-		  (slot-source-get self)
+		  (inspect (slot-source-get self))
 		  (slot-source-card-idx-get self)
-		  (slot-dest-get self)))
+		  (inspect (slot-dest-get self))))
 
 (define-method (id-get (self <move-cards>))
-  (format #f "~a-~a-~a" (slot-source-get self) (slot-source-card-idx-get self) (slot-dest-get self)))
+  (format #f "~a-~a-~a"
+		  (id-get (slot-source-get self))
+		  (slot-source-card-idx-get self)
+		  (id-get (slot-dest-get self))))
 
-(define (-nn-card-encode card)
-  (list (car card)     ; rank
-		(cadr card)    ; suit
-		(if (caddr card) 1 0))) ; flipped
-
-(define-method (nn-encode (self <move-cards>))
-  (assert (valid? self))
-  (let ((encoded-list 
-		 (append (list (slot-source-get self)
-					   (slot-dest-get self)
-					   (slot-source-card-idx-get self))
-				 (fold append '() (map -nn-card-encode (card-list-get self))))))
-	(/ (hash-djb (uint-list->bytevector encoded-list (native-endianness) 4)) #xFFFFFFFF)))
-		
 ;;; Get the list of cards that would be picked up by the player for this move.
 ;;; '() if no cards could be picked up.
 ;;; Order is lowest to highest.
 (define-method (card-list-get (self <move-cards>))
-  (let ((top-build (get-top-build (get-cards (slot-source-get self)) '())))
+  (let ((top-build (get-top-build (map legacy-get (cards-get (slot-source-get self))) '())))
 	(if (>= (slot-source-card-idx-get self) (length top-build))
 		'()
-		(take (reverse top-build) (+ 1 (slot-source-card-idx-get self)))))
+		(map (lambda (c) (make <card> #:card c)) (take (reverse top-build) (1+ (slot-source-card-idx-get self))))))
   )
 
 ;;; Card at source position and slot
 (define-method (card-source-get (self <move-cards>))
-  (list-ref (get-cards (slot-source-get self)) (slot-source-card-idx-get self)))
+  (list-ref (cards-get (slot-source-get self)) (slot-source-card-idx-get self)))
 
 ;;; True if move is valid
 (define-method (valid? (self <move-cards>))
-  (and (is-visible? (card-source-get self))
+  (and (visible? (card-source-get self))
 	   ;; Only the top cards of non-expanded slots (i.e. foundation) can be played.
-	   (or (is-slot-expanded (slot-source-get self)) (= (slot-source-card-idx-get self) 0))
-	   (not (empty-slot? (slot-source-get self)))
-	   (droppable? (slot-source-get self) (card-list-get self) (slot-dest-get self))
+	   (or (expanded? (slot-source-get self)) (= (slot-source-card-idx-get self) 0))
+	   (not (empty? (slot-source-get self)))
+	   (droppable? (id-get (slot-source-get self)) (map legacy-get (card-list-get self)) (id-get (slot-dest-get self)))
 	   )
   )
 
 ;;; Information relating to game rules
+(define-class <card> (<object>)
+  (-card #:init-keyword #:card #:getter legacy-get)
+  )
+
+(define-method (visible? (self <card>))
+  (is-visible? (slot-ref self '-card)))
+
+(define-method (suit-get (self <card>))
+  (get-suit (slot-ref self '-card)))
+
+(define-method (color-get (self <card>))
+  (get-color (slot-ref self '-card)))
+
+(define-method (inspect (self <card>))
+  (format #f "#<card ~a>" (legacy-get self)))
+
+(define-class <slot> (<object>)
+  (-id #:init-keyword #:id #:getter id-get)
+  )
+
+(define-method (cards-get (self <slot>))
+  (map (lambda (c) (make <card> #:card c)) (get-cards (id-get self))))
+
+(define-method (empty? (self <slot>))
+  (empty-slot? (id-get self)))
+
+(define-method (expanded? (self <slot>))
+  (is-slot-expanded? (id-get self)))
+
+(define-method (card-top-make-visible (self <slot>))
+  (make-visible-top-card (id-get self)))
+
+(define-method (inspect (slot <slot>))
+  (format #f "#<slot id: ~a>" (id-get slot)))
+
 (define-class <game> (<object>)
   (-tableau #:init-keyword #:tableau #:getter tableau-get)
   (-foundation #:init-keyword #:foundation #:getter foundation-get)
   (-waste #:init-keyword #:waste #:getter waste-get))
 
 (define-method (slots-all (self <game>))
-  (append (slot-ref self '-tableau)
-		  (slot-ref self '-foundation)
-		  (list (slot-ref self '-waste))))
+  (append (tableau-get self)
+		  (foundation-get self)
+		  (list (waste-get self))))
 
 ;;; A node in the current game state tree
 (define-class <game-state> (<object>)
   (-game #:init-keyword #:game #:getter game-get)
-  (-move-id #:init-value 0))
-
-(define-method (move-id-create (self <game-state>))
-  (let ((move-id (slot-ref self '-move-id)))
-	(slot-set! self '-move-id (+ move-id 1))
-	move-id))
+  )
 
 ;; All potential moves at this node.
 (define-method (moves-all-it (self <game-state>) proc)
-  ;; Get alist of slots and indicies with cards ((slot . card-idx) (6 . 1) ... )
+  ;; Get alist of slots and indicies with cards ((slot . card-idx) (#<slot> . 1) ... )
   ;; Used to make a move from every card in the stack that could be played from a slot.
   (let ((slots-with-idxs
 		 (append-map (lambda (slot)
-					   (map (lambda (idx) (cons slot idx)) (iota (length (get-cards slot)))))
+					   (map (lambda (idx) (cons slot idx)) (iota (length (cards-get slot)))))
 					 (slots-all (game-get self)))))
 	;; Get all combinations of moves among the slots and each card in the slots
-	;; (((slot-src . card-idx) . slot-dst) ((6 . 0) . 8) ... )
+	;; (((slot-src . card-idx) . slot-dst) ((#<slot> . 0) . #<slot>) ... )
 	(permute-it (lambda (p)
 				  (proc
 				   (make <move-cards>
@@ -527,52 +573,65 @@
   (moves-all-it self (lambda (m) (if (valid? m) (proc m)))))
 
 (define-method (execute (gs <game-state>) (move <move-cards>))
-  (let* ((srccards (card-list-get move))
-		 (newsrccards (list-tail (get-cards (slot-source-get move)) (length srccards)))
-		 (newdstcards (append srccards (get-cards (slot-dest-get move)))))
-;;;	(format #t "card move: ~a srccards: ~a newsrc: ~a newdst: ~a\n" move srccards newsrccards newdstcards)
+  (let* ((moving-cards (card-list-get move))
+		 (newsrccards (list-tail (cards-get (slot-source-get move)) (length moving-cards)))
+		 (newdstcards (append moving-cards (cards-get (slot-dest-get move)))))
+;;;	(format #t "card move: ~a srccards: ~a newsrc: ~a newdst: ~a\n"
+;;;			(inspect move) (map inspect moving-cards) (map inspect newsrccards) (map inspect newdstcards))
 	;; Remove cards from source slot
-	(set-cards-c! (slot-source-get move) newsrccards)
+	(set-cards! (id-get (slot-source-get move)) (map legacy-get newsrccards))
 	;; Put cards in dest slot
-	(set-cards-c! (slot-dest-get move) newdstcards)
-	(unless (empty-slot? (slot-source-get move))
-	  (make-visible-top-card (slot-source-get move)))))
+	(set-cards! (id-get (slot-dest-get move)) (map legacy-get newdstcards))
+	(unless (empty? (slot-source-get move))
+	  (card-top-make-visible (slot-source-get move)))
+	)
+  )
 
 (define-method (execute (gs <game-state>) (move <move-deal>))
   (meta-deal))
 
 ;;; NN for cards
-;;; Input node corresponding to a move from a source slot that can have a single card.
-;;;
-;;; Encodes data from the move as a numeric value.
-(define-class <nn-node-input-move> (<nn-node-input>)
-  (-move #:setter move-set! #:init-value #nil)  ; <move>
-  (-value #:init-value #nil)  ; <move>
+
+(define (nn-encode-no-card)
+  '(0 0 0))
+
+(define-method (nn-encode (self <slot>))
+  (append
+   (list (length (cards-get self)))
+   (if (empty? self)
+	   (nn-encode-no-card)
+	   (nn-encode (car (cards-get self)))))
   )
 
-(define-method (move-set! (self <nn-node-input-move>) (move <move>))
-  (slot-set! self '-move move)
-  (slot-set! self '-value #nil))
+(define-method (nn-encode (self <card>))
+  (if (visible? self)
+	  (list (color-get self) (suit-get self) 1)
+	  '(2 0 0))
+  )
 
-(define-method (clear! (self <nn-node-input-move>))
-  (slot-set! self '-move #nil)
-  (slot-set! self '-value #nil))
+(define-method (nn-encode-length-move-cards)
+  11
+  )
 
-(define-method (-display (self <nn-node-input-move>) (network <nn-network>))
-  (format #f
-		  "~a move: ~a"
-		  (next-method)
-		  (slot-ref self '-move)
-		  (value-get self network)))
+(define-method (nn-encode (self <move-cards>))
+  (assert (valid? self))
+  (let ((result
+		 (append (list (id-get (slot-source-get self)))
+				 (list (id-get (slot-dest-get self)))
+				 (list (slot-source-card-idx-get self))
+				 (list (length (card-list-get self)))
+				 (nn-encode (card-source-get self))
+				 (nn-encode (slot-dest-get self))
+				 )))
+	(format #t "~a\n" result)
+	(assert (= (length result) (nn-encode-length-move-cards)))
+	result
+	)
+  )
 
-(define-method (value-get (self <nn-node-input-move>) (network <nn-network>))
-  (cond ((slot-ref self '-value) (slot-ref self '-value))
-		(else (let ((result
-					 (if (slot-ref self '-move)
-						 (nn-encode (slot-ref self '-move))
-						 0)))
-				(slot-set! self '-value result)
-				result))))
+(define-method (nn-encode (self <game-state>))
+  (map append (map nn-encode (slots-all (game-get self))))
+  )
 
 (define-method (mutation-factor (p0 <number>) (p1 <number>) (c <number>))
   (if (or (= p0 c) (= p1 c)) 0.0 1.0))
@@ -600,6 +659,7 @@
 		   (nodes-get c))
 	 (length (nodes-get p0))))
 
+;;; Get a normalized value describing the degree to which network c differs from either of its parents p0 and p1.
 (define-method (mutation-factor (p0 <nn-network>) (p1 <nn-network>) (c <nn-network>))
   (/ (fold (lambda (ep0 ep1 ec acc) (+ acc (mutation-factor ep0 ep1 ec)))
 		   0.0
@@ -668,15 +728,19 @@
 		  ((<= (random 1.0) p) (f (cons (car ln) out) (cdr ln) (* p p)))
 		  (else (f (cons (car ln) out) (cdr ln) p)))))
 
+(define (nn-calc-generation-stats evaluated-networks stats)
+  (let ((best (nn-by-best evaluated-networks)))
+	(format #t "INSPECTION OF BEST:\n~a\n\n~a\n\n" (inspect (car best)) (inspect (cadr best)))
+	(format #t "EVOLVE POPULATION:\n Final 25 fitnesses: ~a\n"
+			(list-head (map (lambda (nn) (cons (name-get nn) (fitness-get nn))) best) (min (length best) 25))
+			)
+	(exact->inexact (/ (apply + (map fitness-get best)) (length best)))
+	)
+  )
+
 (define-method (nn-evolve-population evaluated-networks)
   (let ((best (nn-by-best evaluated-networks)))
 	(assert (>= (length best) 2))
-	(format #t "INSPECTION OF BEST:\n~a\n"
-			(fold (lambda (a b) (string-append (inspect a) "\n" (inspect b))) "" (list-head best 2)))
-	(format #t "EVOLVE POPULATION:\n Final fitnesses: ~a\n Average fitness: ~a\n\n"
-			(map (lambda (nn) (cons (name-get nn) (fitness-get nn))) best)
-			(exact->inexact (/ (apply + (map fitness-get best)) (length best)))
-			)
 	(map (lambda (n) (apply nn-combine (nn-select-parents best 0.95 2))) evaluated-networks)))
 
 
@@ -686,7 +750,7 @@
 
 (define-method (fitness-eval (self <nn-network-klondike>) (game <game>) (steps-elapsed <integer>))
   (apply + (- nn-max-moves steps-elapsed)
-		 (map (lambda (slot) (* 5 (length (get-cards slot)))) (foundation-get game)))
+		 (map (lambda (slot) (* 5 (length (cards-get slot)))) (foundation-get game)))
   )
 
 (define-method (success-probability (self <nn-network-klondike>))
@@ -701,42 +765,53 @@
 (define-method (node-deal-get (self <nn-layer-input-klondike>))
   (find (lambda (n) (equal? (id-get n) "input-deal")) (nodes-get self)))
 
+;;; Make a flat list of (nn-encode-length-move-cards) nodes per slot.
+(define-method (nn-make-input-move-nodes (game <game>))
+  (append-map
+   (lambda (slot)
+	 (map
+	  (lambda (i) (make <nn-node-input-real> #:id (format #f "input-slot-~a-~a" (id-get slot) i)))
+	  (iota (nn-encode-length-move-cards)))
+	 )
+   (sort (slots-all game) (lambda (slot0 slot1) (>= (id-get slot0) (id-get slot1)))))
+  )
+
 (define-method (nn-make-input-layer (game <game>))
-  (let ((node-per-slot
-		 (let f ((out '()) (lislot (sort (slots-all game) <)))
-		   (cond ((null? lislot) (reverse out))
-				 (else (f (cons (make <nn-node-input-move>
-								  #:id (format #f "input-slot-~a" (car lislot)))
-								out)
-						  (cdr lislot))))))
-		(node-deal (make <nn-node-input-move> #:id "input-deal")))
+  (let ((nodes-per-slot (nn-make-input-move-nodes game))
+		(node-deal (make <nn-node-input-real> #:id "input-deal")))
 	(make <nn-layer-input-klondike>
-	  #:nodes (cons node-deal node-per-slot)
+	  #:nodes (cons node-deal nodes-per-slot)
 	  #:node-deal node-deal
-	  #:nodes-slots node-per-slot) ; These should be in ascending order by slot index
+	  #:nodes-slots nodes-per-slot) ; These should be in ascending order by slot index
 	)
   )
 
 (define-method (nn-network-klondike (game <game>))
-  (nn-network-fully-connected
-   <nn-network-klondike>
-   (nn-make-input-layer game)
-   1
-   6
-   (list (make <nn-node-output-real> #:id "output" #:links-in '())))
+  (let ((input-layer (nn-make-input-layer game)))
+	(nn-network-fully-connected
+	 <nn-network-klondike>
+	 input-layer
+	 1
+	 (floor (/ (1+ (length (nodes-get input-layer))) 2)) ; +1 output node
+	 (list (make <nn-node-output-real> #:id "output" #:links-in '())))
+	)
   )
 
 (define-method (nn-network-set! (network <nn-network-klondike>) (move <move-cards>) (game <game>))
   (clear! (layer-input-get network))
-  (let ((target-node (list-ref (nodes-slots-get (layer-input-get network))
-							   (- (slot-source-get move) 1))))
+  (let* ((target-node-group-idx (- (id-get (slot-source-get move)) 1))
+		 (target-nodes (list-head (list-tail (nodes-slots-get (layer-input-get network)) target-node-group-idx)
+								  (nn-encode-length-move-cards)))
+		 (move-encoded (nn-encode move))
+		 )
 ;;;	(format #t "Setting move ~a to node ~a\n" (inspect move) (inspect target-node network))
-	(move-set! target-node move))
+	(for-each (lambda (node value) (value-set! node value)) target-nodes move-encoded)
 	)
+  )
 
 (define-method (nn-network-set! (network <nn-network-klondike>) (move <move-deal>) (game <game>))
   (clear! (layer-input-get network))
-  (move-set! (node-deal-get (layer-input-get network)) move)
+  (value-set! (node-deal-get (layer-input-get network)) 1.0)
   )
 
 (define (new-game)
@@ -957,14 +1032,19 @@
       (or (not (empty-slot? (car slots)))
           (any-slot-nonempty? (cdr slots)))))
 
-(define (get-hint)
+(define (autoplay)
   (set! *random-state* (random-state-from-platform))
-  
-  (let* ((game (make <game> #:tableau tableau #:foundation foundation #:waste waste))
+  (let* ((game (make <game>
+				 #:tableau (map (lambda (id) (make <slot> #:id id)) tableau)
+				 #:foundation (map (lambda (id) (make <slot> #:id id)) foundation)
+				 #:waste (make <slot> #:id waste)
+				 ))
 		 (networks (map (lambda (n) (randomize! (nn-network-klondike game))) (iota nn-population-size)))
 		 )
-	(delayed-call (lambda () (evaluate game '() networks 0 0))))
-  
+	(delayed-call (lambda () (evaluate game '() networks 0 0 '()))))
+  )
+
+(define (get-hint)
   (or (or-map is-ace? (cons waste tableau))
       (or-map shiftable-iter tableau)
       (and (not (empty-slot? waste))
@@ -1022,6 +1102,6 @@
 
 (define (timeout) #f)
 
-(set-features droppable-feature dealable-feature)
+(set-features droppable-feature dealable-feature autoplay-feature)
 
-(set-lambda new-game button-pressed button-released button-clicked button-double-clicked game-over game-won get-hint get-options apply-options timeout droppable? dealable?)
+(set-lambda new-game button-pressed button-released button-clicked button-double-clicked game-over game-won get-hint get-options apply-options timeout droppable? dealable? autoplay)

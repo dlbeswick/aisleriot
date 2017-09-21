@@ -165,6 +165,7 @@ ar_stock_init (void)
   const char *stock_icon_aliases[][2] = {
     { AR_STOCK_CONTENTS,         "help-contents" },
     { AR_STOCK_HINT,             "dialog-information" },
+    { AR_STOCK_AUTOPLAY,         "dialog-information" },
     { AR_STOCK_NEW_GAME,         "document-new" },
     { AR_STOCK_START_NEW_GAME,   "document-new" },
     { AR_STOCK_RESET,            "edit-clear" },
@@ -190,6 +191,7 @@ ar_stock_init (void)
     { AR_STOCK_CONTENTS,         N_("_Contents"),          0, GDK_KEY_F1, NULL },
     { AR_STOCK_FULLSCREEN,       N_("_Fullscreen"),        0, GDK_KEY_F11, NULL },
     { AR_STOCK_HINT,             N_("_Hint"),              GDK_CONTROL_MASK, 'h', NULL },
+    { AR_STOCK_AUTOPLAY,         N_("_Autoplay"),          GDK_CONTROL_MASK, 'a', NULL },
     /* Translators: This "_New" is for the menu item 'Game->New', implies "New Game" */
     { AR_STOCK_NEW_GAME,         N_("_New"),               GDK_CONTROL_MASK, 'n', NULL },
     /* Translators: This "_New Game" is for the game-over dialogue */

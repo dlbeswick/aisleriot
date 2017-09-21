@@ -109,7 +109,8 @@ typedef enum {
   FEATURE_DROPPABLE     = 1 << 0,
   FEATURE_SCORE_HIDDEN  = 1 << 1,
   FEATURE_DEALABLE      = 1 << 2,
-  ALL_FEATURES          = 0x7
+  FEATURE_AUTOPLAY      = 1 << 3,
+  ALL_FEATURES          = 0xF
 } AisleriotGameFeatures;
 
 typedef enum {
@@ -198,6 +199,8 @@ gboolean aisleriot_game_button_double_clicked_lambda (AisleriotGame * game,
                                                       int slot_id);
 
 char *aisleriot_game_get_hint (AisleriotGame *game);
+
+void aisleriot_game_autoplay (AisleriotGame *game);
 
 GList *aisleriot_game_get_options (AisleriotGame * game);
 
