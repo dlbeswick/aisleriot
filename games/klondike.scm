@@ -282,7 +282,7 @@
   (format #f
 		  "~a links-in: ~a"
 		  (next-method)
-		  (map inspect (links-in-get self))))
+		  (string-join (map inspect (links-in-get self)) "\n")))
 
 (define-method (randomize! (self <nn-node-consumer>))
   (let each-link ((ilinks (links-in-get self)))
@@ -765,7 +765,9 @@
 (define-method (node-deal-get (self <nn-layer-input-klondike>))
   (find (lambda (n) (equal? (id-get n) "input-deal")) (nodes-get self)))
 
-;;; Make a flat list of (nn-encode-length-move-cards) nodes per slot.
+;;; One group per slot with length, suit shown, value shown.
+;;; One group of 11 move-cards test nodes.
+;;; One deal node.
 (define-method (nn-make-input-move-nodes (game <game>))
   (append-map
    (lambda (slot)
