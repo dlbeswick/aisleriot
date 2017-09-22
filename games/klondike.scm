@@ -782,12 +782,15 @@
 
 ;;; networks should be ordered by fitness
 (define (nn-select-parents networks probability ndesired)
-  (let ((fitness-best (max (map fitness-get networks))))
+  (let ((max-best (max (map networks fitness-get))))
 	(let f ((out '()) (ln networks))
 	  (cond ((= (length out) ndesired) (reverse out))
 			((null? ln) (list-head networks ndesired))
-			((<= (random 1.0) (probability) (f (cons (car ln) out) (cdr ln))))
-			(else (f (cons (car ln) out) (cdr ln) p))))))
+			((<= (random probability) (- 1 (/ (fitness-get (car ln)) max-best))) (f (cons (car ln) out) (cdr ln)))
+			(else (f (cons (car ln) out) (cdr ln) p)))
+	  )
+	)
+  )
 
 (define (nn-calc-generation-stats evaluated-networks stats)
   (let ((best (nn-by-best evaluated-networks)))
