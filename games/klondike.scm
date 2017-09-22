@@ -51,7 +51,7 @@
 
 ;;; NN setup
 
-(define nn-population-size 100)
+(define nn-population-size 10)
 (define nn-combine-chance 0.5)
 (define nn-mutation-chance 0.001)
 (define nn-max-moves 100)
@@ -105,22 +105,21 @@
 		(begin
 		  (meta-new-game)
 		  (let ((stats-new (cons (nn-calc-generation-stats evaluated-networks stats) stats)))
-			(format #t "Stats history: ~a\n" (string-join (map object->string stats-new) "\n"))
+			(format #t "Stats history:\n ~a\n" (string-join (map object->string stats-new) "\n"))
 			(evaluate game
 					  '()
 					  (nn-evolve-population (cons network evaluated-networks))
 					  0
 					  (1+ generation)
-					  stats-new
-					  '())
+					  stats-new)
 			)
 		  )
 		(begin
 		  (meta-restart-game)
-		  (evaluate game (cons network evaluated-networks) (cdr pending-networks) 0 generation stats '()))))
+		  (evaluate game (cons network evaluated-networks) (cdr pending-networks) 0 generation stats))))
 )
 
-(define (evaluate game evaluated-networks pending-networks steps generation stats move-cache)
+(define (evaluate game evaluated-networks pending-networks steps generation stats)
   (let ((network (car pending-networks)))
 	(let ((fitness (fitness-eval network game steps)))
 ;;;	  (format #t " fitness: ~a\n" fitness)
@@ -158,14 +157,7 @@
 		  (unless (null? moves)
 				  ;; Try all moves on network
 				  (let ((evals
-						 (map (lambda (m)
-								;;(format #t "Try move on network: ~a\n" (inspect m))
-								;;(format #t "\nNETWORK:\n~a\n\n" (inspect network))
-								(let ((prob-result (success-probability! network m game move-cache)))
-								  (set! move-cache (cdr prob-result)) ; solve side-effect?
-								  (cons m (car prob-result))
-								  )
-								)
+						 (map (lambda (m) (cons m (success-probability! network m game)))
 							  (reverse moves))))
 					(let ((by-score (sort evals (lambda (ala alb) (> (cdr ala) (cdr alb))))))
 ;;;				(for-each (lambda (al) (format #t "Success chance for move ~a: ~a\n" (inspect (car al)) (cdr al))) by-score)
@@ -175,8 +167,7 @@
 				  )
 		  )
 			
-		(delayed-call (lambda () (evaluate game evaluated-networks pending-networks (1+ steps) generation stats
-										   move-cache)))
+		(delayed-call (lambda () (evaluate game evaluated-networks pending-networks (1+ steps) generation stats)))
 		)
 	  )
 	 )
@@ -349,13 +340,18 @@
   (-nodes #:init-keyword #:nodes #:getter nodes-get)
   )
 
+(define-method (clear! (self <nn-layer>))
+  (for-each (lambda (n) (clear! n)) (nodes-get self)))
+
 (define-method (inspect (self <nn-layer>) (network <nn-network>))
   (format #f
 		  "<nn-layer nodes: ~a>"
-		  (map (lambda (n) (inspect n network)) (nodes-get self))))
+		  (map (lambda (n) (inspect n network)) (nodes-get self)))
+  )
 
 (define-method (node-by-id (self <nn-layer>) id)
-  (find (lambda (n) (equal? (id-get n) id)) (nodes-get self)))
+  (find (lambda (n) (equal? (id-get n) id)) (nodes-get self))
+  )
 
 ;; Make new links between each node
 ;; layer1 should be a layer full of node-consumers
@@ -375,10 +371,20 @@
   self)
 
 (define-class <nn-layer-input> (<nn-layer>)
+  (-value-cache #:init-value '())
   )
 
-(define-method (clear! (self <nn-layer>))
-  (for-each (lambda (n) (clear! n)) (nodes-get self)))
+(define-method (cache-output-value! (self <nn-layer-input>) value)
+  (slot-set! self '-value-cache (cons (cons (cache-key self) value) (slot-ref self '-value-cache)))
+  )
+
+(define-method (cached-output (self <nn-layer-input>))
+  (assoc (cache-key self) (slot-ref self '-value-cache))
+  )
+
+(define-method (cache-key (self <nn-layer-input>))
+  (map value-get (nodes-get self))
+  )
 
 ;;; Neural network
 (define-method (node-by-id (self <nn-network>) id)
@@ -784,25 +790,27 @@
   )
 
 ;;; Returns (outcome new-move-cache)
-(define-method (success-probability! (network <nn-network-klondike>) (move <move>) (game <game>) move-cache)
+(define-method (success-probability! (network <nn-network-klondike>) (move <move>) (game <game>))
+  ;;(format #t "Try move on network: ~a\n" (inspect move))
+  ;;(format #t "\nNETWORK:\n~a\n\n" (inspect network))
   ;; If the network ping-pongs a lot, then the cache can speed up the inevitable
-  ;;(format #t "~a\n" move-cache)
-  ;(let ((cached (assoc move move-cache)))
-	;(if cached
-		;(begin
-		  ;(display "CACHE HIT\n")
-		  ;(list (cdar move-cache) move-cache)
-		  ;)
-		;(begin
+  (let ((cached (cached-output (layer-input-get network))))
+	(if cached
+		(begin
+		  ;;(format #t "CACHE HIT ~a\n" cached)
+		  (cdr cached)
+		  )
+		(begin
 		  (nn-network-set! network move game)
 		  (let ((outcome (value-get (car (nodes-get (layer-output-get network))) network)))
-			(cons outcome (cons (cons move outcome) move-cache))
+			(cache-output-value! (layer-input-get network) outcome)
+			outcome
 			)
-		  ;))
-	;)
+		  ))
+	)
   )
 
-(define-class <nn-layer-input-klondike> (<nn-layer>)
+(define-class <nn-layer-input-klondike> (<nn-layer-input>)
   )
 
 ;;; Note: searching for nodes rather than holding references simplifies reconnecting networks after mutation.
@@ -1108,7 +1116,7 @@
 						  (format #t "Initialize network ~a\n" n)
 						  (randomize! (nn-network-klondike game))) (iota nn-population-size)))
 		 )
-	(delayed-call (lambda () (evaluate game '() networks 0 0 '() '()))))
+	(delayed-call (lambda () (evaluate game '() networks 0 0 '()))))
   )
 
 (define (get-hint)
