@@ -52,7 +52,7 @@
 
 ;;; NN setup
 
-(define nn-population-size 20)
+(define nn-population-size 50)
 (define nn-combine-chance 0.5)
 (define nn-mutation-chance 0.001)
 (define nn-max-moves 100)
@@ -103,8 +103,10 @@
 ;;; Changed possible weight range from 0.0->1.0 to -999999999.0->999999999.0.
 ;;;  A far greater range of behaviours was observed (i.e. networks were behaving much more differently.)
 ;;; Note: previous conclusions about the number of hidden layers should be discounted due to a bug.
-;;; Trying to win a single game for now. Think one problem is that when all solutions are equal then some are being
-;;; needlessly conserved. Need to change parent calcuation.
+;;; Trying to win a single same game for now. Think one problem is that when all solutions are equal then some are being
+;;; needlessly conserved. Need to change parent calcuation. PS: This was probably due to total bug with
+;;; caching/parallel.
+;;; 
 
 (assert (>= nn-population-size 2))
 
@@ -114,14 +116,17 @@
 			generation (length pending-networks) (name-get network) (fitness-get network))
 	(if (null? (cdr pending-networks))
 		(begin
-		  (meta-restart-game)
-;;;		  (meta-new-game)
-		  (let ((stats-new (cons (nn-calc-generation-stats evaluated-networks stats) stats)))
+;;;		  (meta-restart-game)
+		  (meta-new-game)
+		  (let ((stats-new (cons (nn-calc-generation-stats evaluated-networks stats) stats))
+				(next-generation
+				 (sort (nn-evolve-population (cons network evaluated-networks))
+							(lambda (a b) (string<? (name-last-get a) (name-last-get b)))))
+				)
 			(format #t "Stats history:\n ~a\n" (string-join (map object->string (reverse stats-new)) "\n"))
 			(evaluate game
 					  '()
-					  (sort (nn-evolve-population (cons network evaluated-networks))
-							(lambda (a b) (string<? (name-last-get a) (name-last-get b))))
+					  next-generation
 					  0
 					  (1+ generation)
 					  stats-new)
@@ -771,9 +776,12 @@
 	)))
 
 	;; Give the network the last name of its best parent. If it was significantly mutated, give it a new last name.
-	(if (= 0 (mutation-factor network0 network1 result))
-		(name-last-set! result (name-last-get network0)))
+	(let ((mfactor (mutation-factor network0 network1 result)))
+	  (if (= 0 mfactor)
+		  (name-last-set! result (name-last-get network0)))
 	
+	  (format #t "Bred ~a X ~a to produce ~a with mutation factor ~a\n"
+			  (name-get network0) (name-get network1) (name-get result) mfactor))
 	result
   ))
 
@@ -781,13 +789,15 @@
   (sort networks (lambda (a b) (> (fitness-get a) (fitness-get b)))))
 
 ;;; networks should be ordered by fitness
-(define (nn-select-parents networks probability ndesired)
-  (let ((max-best (max (map networks fitness-get))))
+(define (nn-select-parents networks success-factor ndesired)
+  (let ((max-best (apply max (map fitness-get networks))))
 	(let f ((out '()) (ln networks))
 	  (cond ((= (length out) ndesired) (reverse out))
 			((null? ln) (list-head networks ndesired))
-			((<= (random probability) (- 1 (/ (fitness-get (car ln)) max-best))) (f (cons (car ln) out) (cdr ln)))
-			(else (f (cons (car ln) out) (cdr ln) p)))
+			((<= (random 1.0)
+				 (* success-factor (if (= 0 max-best) 1.0 (- 1 (/ (fitness-get (car ln)) max-best)))))
+			 (f (cons (car ln) out) (cdr ln)))
+			(else (f out (cdr ln))))
 	  )
 	)
   )
@@ -805,7 +815,7 @@
 (define-method (nn-evolve-population evaluated-networks)
   (let ((best (nn-by-best evaluated-networks)))
 	(assert (>= (length best) 2))
-	(map (lambda (n) (apply nn-combine (nn-select-parents best 0.99 2))) evaluated-networks)))
+	(map (lambda (n) (apply nn-combine (nn-select-parents best 0.95 2))) evaluated-networks)))
 
 
 ;;; Klondike
@@ -821,7 +831,7 @@
 (define-method (success-probability (network <nn-network-klondike>) (move <move>) (game <game>))
   (let ((nn-new (nn-network-for network move game)))
   ;;(format #t "Try move on network: ~a\n" (inspect move))
-  ;;(format #t "\nNETWORK:\n~a\n\n" (inspect network))
+  ;;(format #t "\nNETWORK:\n~a\n\n" (inspect nn-new))
   ;; If the network ping-pongs a lot, then the cache can speed up the inevitable
 	(let* ((cache-key (cache-key nn-new))
 		   (cached (cached-output network cache-key)))
@@ -831,7 +841,7 @@
 			(cdr cached)
 			)
 		  (begin
-			(let ((outcome (value-get (car (nodes-get (layer-output-get network))) network)))
+			(let ((outcome (value-get (car (nodes-get (layer-output-get nn-new))) nn-new)))
 			  (cache-output-value! network cache-key outcome)
 			  outcome
 			  )
@@ -915,15 +925,15 @@
 			  (nn-encode move)
 			  )
 ;;;	(format #t "Setting move ~a to node ~a\n" (inspect move) (inspect target-node network))
-;;;  (format #t "M: ~a\n" (map value-get (nodes-get (layer-input-get network))))
+;;;  (format #t "M: ~a\n" (map value-get (nodes-get (layer-input-get result))))
 	result
 	)
   )
 
 (define-method (nn-network-for (network <nn-network-klondike>) (move <move-deal>) (game <game>))
   (let ((result (next-method)))
-	(value-set! (node-deal-get (layer-input-get network)) (nn-encode move))
-;;;  (format #t "D: ~a\n" (map value-get (nodes-get (layer-input-get network))))
+	(value-set! (node-deal-get (layer-input-get result)) (nn-encode move))
+;;;  (format #t "D: ~a\n" (map value-get (nodes-get (layer-input-get result))))
 	result
 	)
   )
@@ -1154,7 +1164,7 @@
 				 #:foundation (map (lambda (id) (make <slot> #:id id)) foundation)
 				 #:waste (make <slot> #:id waste)
 				 ))
-		 (networks (map (lambda (n)
+		 (networks (par-map (lambda (n)
 						  (format #t "Initialize network ~a\n" n)
 						  (randomize! (nn-network-klondike game))) (iota nn-population-size)))
 		 )
