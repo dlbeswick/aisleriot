@@ -1063,6 +1063,13 @@ scm_meta_new_game (void)
 }
 
 static SCM
+scm_meta_new_game_with_seed (SCM seed)
+{
+  aisleriot_game_new_game_with_rand(app_game, g_rand_new_with_seed(scm_to_uint(seed)));
+  return SCM_BOOL_T;
+}
+
+static SCM
 scm_meta_restart_game (void)
 {
   aisleriot_game_restart_game(app_game);
@@ -1099,6 +1106,7 @@ cscm_init (void *data G_GNUC_UNUSED)
   scm_c_define_gsubr ("dealable-set-sensitive", 1, 0, 0, scm_dealable_set_sensitive);
   scm_c_define_gsubr ("meta-deal", 0, 0, 0, scm_meta_deal);
   scm_c_define_gsubr ("meta-new-game", 0, 0, 0, scm_meta_new_game);
+  scm_c_define_gsubr ("meta-new-game-with-seed", 1, 0, 0, scm_meta_new_game_with_seed);
   scm_c_define_gsubr ("meta-restart-game", 0, 0, 0, scm_meta_restart_game);
 
   scm_c_export ("set-feature-word!", 
@@ -1124,6 +1132,7 @@ cscm_init (void *data G_GNUC_UNUSED)
                 "dealable-set-sensitive",
 				"meta-deal",
 				"meta-new-game",
+				"meta-new-game-with-seed",
 				"meta-restart-game",
                 NULL);
 }

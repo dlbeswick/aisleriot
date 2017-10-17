@@ -52,7 +52,7 @@
 
 ;;; NN setup
 
-(define nn-population-size 50)
+(define nn-population-size 3)
 (define nn-combine-chance 0.5)
 (define nn-mutation-chance 0.001)
 (define nn-max-moves 100)
@@ -110,39 +110,41 @@
 
 (assert (>= nn-population-size 2))
 
-(define (evaluate-next game evaluated-networks pending-networks steps generation stats)
-  (let ((network (car pending-networks)))
-	(format #t "GENERATION: ~a candidates remaining: ~a tested: '~a' had fitness ~a\n"
-			generation (length pending-networks) (name-get network) (fitness-get network))
-	(if (null? (cdr pending-networks))
-		(begin
-;;;		  (meta-restart-game)
-		  (meta-new-game)
-		  (let ((stats-new (cons (nn-calc-generation-stats evaluated-networks stats) stats))
-				(next-generation
-				 (sort (nn-evolve-population (cons network evaluated-networks))
-							(lambda (a b) (string<? (name-last-get a) (name-last-get b)))))
+(define (evaluate-next game evaluated-networks pending-networks evaluated-seeds pending-seeds steps generation stats)
+  (let* ((network (car pending-networks))
+		 (seed (car pending-seeds))
+		 (fitness-seed (fitness-eval network game steps)))
+	(fitness-set! network (+ (fitness-get network) fitness-seed))
+	(format #t "GENERATION: ~a game seed: ~a candidates remaining: ~a tested: '~a' had fitness ~a for total ~a\n"
+			generation seed (length pending-networks) (name-get network) fitness-seed (fitness-get network))
+	(if (null? (cdr pending-seeds))
+		(if (null? (cdr pending-networks))
+			(begin
+			  (let ((stats-new (cons (nn-calc-generation-stats (cons network evaluated-networks) stats) stats))
+					(next-generation
+					 (sort (nn-evolve-population (cons network evaluated-networks))
+						   (lambda (a b) (string<? (name-last-get a) (name-last-get b)))))
+					)
+				(format #t "Stats history:\n ~a\n" (string-join (map object->string (reverse stats-new)) "\n"))
+				(evaluate game
+						  '()
+						  next-generation
+						  '()
+						  (cons seed evaluated-seeds)
+						  0
+						  (1+ generation)
+						  stats-new)
 				)
-			(format #t "Stats history:\n ~a\n" (string-join (map object->string (reverse stats-new)) "\n"))
-			(evaluate game
-					  '()
-					  next-generation
-					  0
-					  (1+ generation)
-					  stats-new)
-			)
-		  )
-		(begin
-		  (meta-restart-game)
-		  (evaluate game (cons network evaluated-networks) (cdr pending-networks) 0 generation stats))))
-)
+			  )
+			(evaluate game (cons network evaluated-networks) (cdr pending-networks) '() (cons seed evaluated-seeds) 0
+					  generation stats))
+		(evaluate game evaluated-networks pending-networks (cons seed evaluated-seeds) (cdr pending-seeds) 0
+				  generation stats)))
+  )
 
-(define (evaluate game evaluated-networks pending-networks steps generation stats)
+(define (evaluate game evaluated-networks pending-networks evaluated-seeds pending-seeds steps generation stats)
+  (if (= steps 0) (meta-new-game-with-seed (car pending-seeds)))
   (let ((network (car pending-networks)))
-	(let ((fitness (fitness-eval network game steps)))
-;;;	  (format #t " fitness: ~a\n" fitness)
-	  (fitness-set! network fitness)
-	  )
 	(cond
 ;;;	 ((game-over)
 ;;;	  (display "Game lost\n")
@@ -150,10 +152,11 @@
 ;;;	  #t)
 	 ((game-won)
 	  (display "Won!\n")
-	  (format #t "\nNETWORK:\n~a\n\n" (inspect network)) #t)
+	  (format #t "\nNETWORK:\n~a\n\n" (inspect network))
+	  (evaluate-next game evaluated-networks pending-networks evaluated-seeds pending-seeds steps generation stats))
 	 ((= nn-max-moves steps)
 	  (display "Remaining steps expired\n")
-	  (evaluate-next game evaluated-networks pending-networks steps generation stats))
+	  (evaluate-next game evaluated-networks pending-networks evaluated-seeds pending-seeds steps generation stats))
 	 (else
 	  (let* ((gs (make <game-state> #:game game)))
 ;;;		(format #t "Step ~a\n" steps)
@@ -185,7 +188,8 @@
 				  )
 		  )
 			
-		(delayed-call (lambda () (evaluate game evaluated-networks pending-networks (1+ steps) generation stats)))
+		(delayed-call (lambda () (evaluate game evaluated-networks pending-networks evaluated-seeds pending-seeds
+										   (1+ steps) generation stats)))
 		)
 	  )
 	 )
@@ -1168,7 +1172,7 @@
 						  (format #t "Initialize network ~a\n" n)
 						  (randomize! (nn-network-klondike game))) (iota nn-population-size)))
 		 )
-	(delayed-call (lambda () (evaluate game '() networks 0 0 '()))))
+	(delayed-call (lambda () (evaluate game '() networks '() (iota 10) 0 0 '()))))
   )
 
 (define (get-hint)
