@@ -52,11 +52,17 @@
 
 ;;; NN setup
 
-(define nn-population-size 3)
+(define nn-population-size 20)
+(define nn-training-set-size 10)
+
 (define nn-combine-chance 0.5)
 (define nn-mutation-chance 0.001)
 (define nn-max-moves 100)
 
+;; The degree to which networks with better scores are favoured for breeding
+(define nn-factor-parent-best 0.95)
+
+;; Name generation
 (define vowels (string->char-set "aeiou"))
 (define consonants (char-set-difference
 					(char-set-intersection char-set:lower-case char-set:ascii)
@@ -136,8 +142,8 @@
 						  stats-new)
 				)
 			  )
-			(evaluate game (cons network evaluated-networks) (cdr pending-networks) '() (cons seed evaluated-seeds) 0
-					  generation stats))
+			(evaluate game (cons network evaluated-networks) (cdr pending-networks) '()
+					  (reverse (cons seed evaluated-seeds)) 0 generation stats))
 		(evaluate game evaluated-networks pending-networks (cons seed evaluated-seeds) (cdr pending-seeds) 0
 				  generation stats)))
   )
@@ -799,7 +805,7 @@
 	  (cond ((= (length out) ndesired) (reverse out))
 			((null? ln) (list-head networks ndesired))
 			((<= (random 1.0)
-				 (* success-factor (if (= 0 max-best) 1.0 (- 1 (/ (fitness-get (car ln)) max-best)))))
+				 (* success-factor (if (= 0 max-best) 1.0 (/ (fitness-get (car ln)) max-best))))
 			 (f (cons (car ln) out) (cdr ln)))
 			(else (f out (cdr ln))))
 	  )
@@ -819,7 +825,7 @@
 (define-method (nn-evolve-population evaluated-networks)
   (let ((best (nn-by-best evaluated-networks)))
 	(assert (>= (length best) 2))
-	(map (lambda (n) (apply nn-combine (nn-select-parents best 0.95 2))) evaluated-networks)))
+	(map (lambda (n) (apply nn-combine (nn-select-parents best nn-factor-parent-best 2))) evaluated-networks)))
 
 
 ;;; Klondike
@@ -1172,7 +1178,7 @@
 						  (format #t "Initialize network ~a\n" n)
 						  (randomize! (nn-network-klondike game))) (iota nn-population-size)))
 		 )
-	(delayed-call (lambda () (evaluate game '() networks '() (iota 10) 0 0 '()))))
+	(delayed-call (lambda () (evaluate game '() networks '() (iota nn-training-set-size) 0 0 '()))))
   )
 
 (define (get-hint)

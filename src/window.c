@@ -2372,7 +2372,6 @@ free_load_idle_data (LoadIdleData *data)
 }
 
 /**
- * aisleriot_window_set_game:
  * @window:
  * @game_module: a UTF-8 string
  * @rand: (allow-none) (transfer full): a #GRand, or %NULL
