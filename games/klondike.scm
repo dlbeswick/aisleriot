@@ -51,16 +51,25 @@
 (define waste 1)
 
 ;;; NN setup
+(define nn-test #f)
 
-(define nn-population-size 20)
+(define nn-population-size 12)
 (define nn-training-set-size 10)
 
 (define nn-combine-chance 0.5)
-(define nn-mutation-chance 0.001)
+(define nn-mutation-chance 0.01)
 (define nn-max-moves 100)
 
 ;; The degree to which networks with better scores are favoured for breeding
-(define nn-factor-parent-best 0.95)
+(define nn-factor-parent-best 0.5)
+(define nn-elite-preserve-count 2)
+
+(if nn-test
+	(begin
+	  (set! nn-population-size 3)
+	  (set! nn-training-set-size 1)))
+
+(assert (< nn-elite-preserve-count nn-population-size))
 
 ;; Name generation
 (define vowels (string->char-set "aeiou"))
@@ -73,6 +82,11 @@
 		(else (string-append
 			   (string (charset-random-char vowels) (charset-random-char consonants))
 			   (generate-name (1- nclusters))))))
+
+;; CSV
+(define (list->csv list)
+  (string-join (map object->string list) ",")
+  )
 
 ;;; Observations:
 ;;; Each population member has new game.
@@ -120,23 +134,31 @@
   (let* ((network (car pending-networks))
 		 (seed (car pending-seeds))
 		 (fitness-seed (fitness-eval network game steps)))
-	(fitness-set! network (+ (fitness-get network) fitness-seed))
-	(format #t "GENERATION: ~a game seed: ~a candidates remaining: ~a tested: '~a' had fitness ~a for total ~a\n"
-			generation seed (length pending-networks) (name-get network) fitness-seed (fitness-get network))
+
+	(if (is-elite network)
+		(if (null? evaluated-seeds) (format #t "Elite network ~a: fitness already known\n" (name-get network)))
+		(begin
+		  (fitness-set! network (+ (fitness-get network) fitness-seed))
+		  (format #t "GENERATION: ~a game seed: ~a candidates remaining: ~a tested: '~a' had fitness ~a for total ~a\n"
+				  generation seed (length pending-networks) (name-get network) fitness-seed (fitness-get network))
+	
+		  )
+		)
+	
 	(if (null? (cdr pending-seeds))
 		(if (null? (cdr pending-networks))
 			(begin
 			  (let ((stats-new (cons (nn-calc-generation-stats (cons network evaluated-networks) stats) stats))
 					(next-generation
-					 (sort (nn-evolve-population (cons network evaluated-networks))
+					 (sort (nn-generate-next-population (cons network evaluated-networks))
 						   (lambda (a b) (string<? (name-last-get a) (name-last-get b)))))
 					)
-				(format #t "Stats history:\n ~a\n" (string-join (map object->string (reverse stats-new)) "\n"))
+				(format #t "Stats history:\n ~a\n" (string-join (map list->csv (reverse stats-new)) "\n"))
 				(evaluate game
 						  '()
 						  next-generation
 						  '()
-						  (cons seed evaluated-seeds)
+						  (reverse (cons seed evaluated-seeds))
 						  0
 						  (1+ generation)
 						  stats-new)
@@ -156,13 +178,18 @@
 ;;;	  (display "Game lost\n")
 ;;;	  (evaluate-next game evaluated-networks pending-networks steps generation)
 ;;;	  #t)
+	 ((is-elite network)
+	  (evaluate-next game evaluated-networks pending-networks evaluated-seeds pending-seeds steps generation stats)
+	  )
 	 ((game-won)
 	  (display "Won!\n")
 	  (format #t "\nNETWORK:\n~a\n\n" (inspect network))
-	  (evaluate-next game evaluated-networks pending-networks evaluated-seeds pending-seeds steps generation stats))
+	  (evaluate-next game evaluated-networks pending-networks evaluated-seeds pending-seeds steps generation stats)
+	  )
 	 ((= nn-max-moves steps)
 	  (display "Remaining steps expired\n")
-	  (evaluate-next game evaluated-networks pending-networks evaluated-seeds pending-seeds steps generation stats))
+	  (evaluate-next game evaluated-networks pending-networks evaluated-seeds pending-seeds steps generation stats)
+	  )
 	 (else
 	  (let* ((gs (make <game-state> #:game game)))
 ;;;		(format #t "Step ~a\n" steps)
@@ -265,6 +292,7 @@
 			  #:init-keyword #:name-last #:getter name-last-get #:setter name-last-set!)
   (-value-cache #:init-value '())
   (-value-cache-mutex #:init-thunk make-mutex)
+  (-is-elite #:getter is-elite #:setter is-elite-set! #:init-value #f)
   )
 
 (define-method (cache-output-value! (self <nn-network>) cache-key value)
@@ -568,7 +596,7 @@
 	   )
   )
 
-;;; Information relating to game rules
+;;; A playing card
 (define-class <card> (<object>)
   (-card #:init-keyword #:card #:getter legacy-get)
   )
@@ -798,7 +826,7 @@
 (define (nn-by-best networks)
   (sort networks (lambda (a b) (> (fitness-get a) (fitness-get b)))))
 
-;;; networks should be ordered by fitness
+;;; networks must be ordered by fitness
 (define (nn-select-parents networks success-factor ndesired)
   (let ((max-best (apply max (map fitness-get networks))))
 	(let f ((out '()) (ln networks))
@@ -818,15 +846,46 @@
 	(format #t "EVOLVE POPULATION:\n Final 25 fitnesses: ~a\n"
 			(list-head (map (lambda (nn) (cons (name-get nn) (fitness-get nn))) best) (min (length best) 25))
 			)
-	(exact->inexact (/ (apply + (map fitness-get best)) (length best)))
+	(let ((max (apply max (map fitness-get best)))
+		  (max-no-elites (apply max (map fitness-get (filter (negate is-elite) best))))
+		  (avg (exact->inexact (/ (apply + (map fitness-get best)) (length best))))
+		  )
+	  (list max max-no-elites avg)
+	  )
 	)
   )
 
 (define-method (nn-evolve-population evaluated-networks)
-  (let ((best (nn-by-best evaluated-networks)))
+  ;; Note: don't evolve elites
+  (let* ((best (nn-by-best evaluated-networks))
+		 (no-elites (filter (lambda (nn) (not (is-elite nn))) best)))
 	(assert (>= (length best) 2))
-	(map (lambda (n) (apply nn-combine (nn-select-parents best nn-factor-parent-best 2))) evaluated-networks)))
+	(map (lambda (n) (apply nn-combine (nn-select-parents best nn-factor-parent-best 2))) no-elites)))
 
+;; Note: clears 'elite' flag then sets flag on the returned networks
+;; Returns list of elites
+(define-method (nn-make-elites! evaluated-networks count)
+  (for-each (lambda (nn) (is-elite-set! nn #f)) evaluated-networks)
+  
+  (let ((best (nn-by-best evaluated-networks)))
+	(assert (>= (length best) count))
+	(let ((result (list-head best count)))
+	  (for-each (lambda (nn) (is-elite-set! nn #t)) result)
+	  result
+	  )
+	)
+  )
+
+(define-method (nn-generate-next-population evaluated-networks)
+  (let* ((elites (if (> nn-elite-preserve-count 0)
+						(nn-make-elites! evaluated-networks nn-elite-preserve-count)
+						'()))
+		 (evolved (nn-evolve-population evaluated-networks))
+		 )
+	(format #t "ELITES: ~a\n" (string-join (map name-get elites) ", "))
+	(append elites evolved)
+	)
+  )
 
 ;;; Klondike
 (define-class <nn-network-klondike> (<nn-network>)
@@ -837,7 +896,6 @@
 		 (map (lambda (slot) (* 5 (length (cards-get slot)))) (foundation-get game)))
   )
 
-;;; Returns (outcome new-move-cache)
 (define-method (success-probability (network <nn-network-klondike>) (move <move>) (game <game>))
   (let ((nn-new (nn-network-for network move game)))
   ;;(format #t "Try move on network: ~a\n" (inspect move))
