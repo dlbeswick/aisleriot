@@ -16,6 +16,9 @@
 
 (use-modules (aisleriot interface)
 			 (aisleriot api)
+;			 (aisleriot serialize)
+;			 (aisleriot ga)
+;			 (aisleriot nn)
 			 (oop goops)
 			 (ice-9 format)
 			 (ice-9 threads)
@@ -63,6 +66,8 @@
 ;; The degree to which networks with better scores are favoured for breeding
 (define nn-factor-parent-best 0.5)
 (define nn-elite-preserve-count 2)
+
+(define nn-value-max 3.402823466e+38)
 
 (if nn-test
 	(begin
@@ -148,12 +153,15 @@
 	(if (null? (cdr pending-seeds))
 		(if (null? (cdr pending-networks))
 			(begin
-			  (let ((stats-new (cons (nn-calc-generation-stats (cons network evaluated-networks) stats) stats))
+			  (let ((stats-new
+					 (cons (nn-calc-generation-stats generation (cons network evaluated-networks) stats) stats))
 					(next-generation
 					 (sort (nn-generate-next-population (cons network evaluated-networks))
 						   (lambda (a b) (string<? (name-last-get a) (name-last-get b)))))
 					)
-				(format #t "Stats history:\n ~a\n" (string-join (map list->csv (reverse stats-new)) "\n"))
+				(format #t "Stats history:\n")
+				(format #t "generation,max-fitness-with-elites,max-fitness-no-elites,min-fitness-no-elites,average\n")
+				(format #t "~a\n" (string-join (map list->csv (reverse stats-new)) "\n"))
 				(evaluate game
 						  '()
 						  next-generation
@@ -278,10 +286,10 @@
 
 ;;; Neural network
 (define-method (nn-mutate (self <number>))
-  (+ -999999999.0 (random (* 2 999999999.0)))
+  (* (+ -1.0 (random 2.0)) nn-value-max)
   )
 
-(define-class <nn-network> (<object>)
+(define-class <nn-network> (<object> <serializable>)
   (-layer-input #:init-keyword #:layer-input #:getter layer-input-get #:setter layer-input-set!)
   (-layers-hidden #:init-keyword #:layers-hidden #:getter layers-hidden-get)
   (-layer-output #:init-keyword #:layer-output  #:getter layer-output-get)
@@ -840,17 +848,19 @@
 	)
   )
 
-(define (nn-calc-generation-stats evaluated-networks stats)
+(define (nn-calc-generation-stats generation evaluated-networks stats)
   (let ((best (nn-by-best evaluated-networks)))
 	(format #t "INSPECTION OF BEST:\n~a\n\n~a\n\n" (inspect (car best)) (inspect (cadr best)))
 	(format #t "EVOLVE POPULATION:\n Final 25 fitnesses: ~a\n"
 			(list-head (map (lambda (nn) (cons (name-get nn) (fitness-get nn))) best) (min (length best) 25))
 			)
-	(let ((max (apply max (map fitness-get best)))
-		  (max-no-elites (apply max (map fitness-get (filter (negate is-elite) best))))
-		  (avg (exact->inexact (/ (apply + (map fitness-get best)) (length best))))
-		  )
-	  (list max max-no-elites avg)
+	(let ((no-elites (map fitness-get (filter (negate is-elite) best))))
+	  (list generation
+			(apply max (map fitness-get best))
+			(apply max no-elites)
+			(apply min no-elites)
+			(avg (exact->inexact (/ (apply + no-elites) (length no-elites))))
+			)
 	  )
 	)
   )
