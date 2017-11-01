@@ -2,6 +2,10 @@ NULL =
 
 module_GUILE = \
 	aisleriot/api.scm \
+	aisleriot/serialize.scm \
+	aisleriot/nn.scm \
+	aisleriot/ga.scm \
+	aisleriot/permute.scm \
 	$(NULL)
 
 games_GUILE = \

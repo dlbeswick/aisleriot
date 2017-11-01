@@ -94,6 +94,7 @@ struct _AisleriotGame
   GRand *saved_rand;
 
   guint delayed_call_timeout_id;
+  guint idle_call_id;
 
   GTimer *timer;
 
@@ -1048,6 +1049,44 @@ scm_delayed_call (SCM callback)
   return SCM_BOOL_T;
 }
 
+/* @callback is GC protected during this call! */
+static gboolean
+scm_execute_idle_function (SCM callback)
+{
+  AisleriotGame *game = app_game;
+
+  game->idle_call_id = 0;
+
+  if (!game_scm_call (callback, NULL, 0, NULL))
+    return FALSE;
+
+  g_idle_remove_by_data(callback);
+  
+  return FALSE;
+}
+
+static SCM
+scm_idle_call (SCM callback)
+{
+  AisleriotGame *game = app_game;
+
+  /* We can only have one pending delayed call! */
+  if (game->idle_call_id != 0) {
+    return scm_throw (scm_from_locale_symbol ("aisleriot-invalid-call"),
+                      scm_list_1 (scm_from_utf8_string ("Already have an idle callback pending.")));
+  }
+
+  /* We need to protect the callback data from being GC'd until the
+   * timeout has run.
+   */
+  scm_gc_protect_object (callback);
+
+  g_idle_add((GSourceFunc) scm_execute_idle_function,
+			 callback);
+
+  return SCM_BOOL_T;
+}
+
 static SCM
 scm_meta_deal (void)
 {
@@ -1101,6 +1140,7 @@ cscm_init (void *data G_GNUC_UNUSED)
   scm_c_define_gsubr ("get-timeout", 0, 0, 0, scm_get_timeout);
   scm_c_define_gsubr ("set-timeout!", 1, 0, 0, scm_set_timeout);
   scm_c_define_gsubr ("delayed-call", 1, 0, 0, scm_delayed_call);
+  scm_c_define_gsubr ("idle-call", 1, 0, 0, scm_idle_call);
   scm_c_define_gsubr ("undo-set-sensitive", 1, 0, 0, scm_undo_set_sensitive);
   scm_c_define_gsubr ("redo-set-sensitive", 1, 0, 0, scm_redo_set_sensitive);
   scm_c_define_gsubr ("dealable-set-sensitive", 1, 0, 0, scm_dealable_set_sensitive);
@@ -1127,6 +1167,7 @@ cscm_init (void *data G_GNUC_UNUSED)
                 "get-timeout", 
                 "set-timeout!", 
                 "delayed-call", 
+                "idle-call", 
                 "undo-set-sensitive", 
                 "redo-set-sensitive", 
                 "dealable-set-sensitive",
