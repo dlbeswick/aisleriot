@@ -94,7 +94,7 @@ response_cb (GtkWidget *dialog,
                         -1);
     g_assert (game_module != NULL);
 
-    aisleriot_window_set_game_module (priv->window, game_module, NULL);
+    aisleriot_window_set_game_module (priv->window, game_module, NULL, FALSE);
 
     g_free (game_module);
   }

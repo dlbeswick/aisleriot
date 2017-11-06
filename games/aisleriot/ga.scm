@@ -1,13 +1,37 @@
-(define-module (aisleriot ga))
+(define-module (aisleriot ga)
+  #:use-module (ice-9 futures)
+  #:use-module (ice-9 local-eval)
+  #:use-module (ice-9 popen)
+  #:use-module (ice-9 pretty-print)
+  #:use-module (ice-9 rdelim)
+  #:use-module (ice-9 textual-ports)
+  #:use-module (ice-9 threads)
+  #:use-module (srfi srfi-1)
+  #:use-module (oop goops)
+  #:use-module (rnrs base)
+  #:use-module (aisleriot formatt)
+  #:use-module (aisleriot serialize)
+  #:use-module (aisleriot nn)
+  #:use-module (aisleriot interface)
+  #:re-export (serialize)
+  #:export (<ga-automation-run>
+			<ga-genome>
 
-(use-modules
- (srfi srfi-1)
- (oop goops)
- (rnrs base)
- (aisleriot serialize)
- (aisleriot nn)
- (aisleriot interface)
- )
+			genome-get
+			name-get
+			seed-get
+			subject-get
+			
+			ga-population-size
+			ga-training-set-size
+			ga-evolve
+			
+			aisleriot-spawn
+			fitness-eval
+			ga-automate
+			ga-automation-run
+			ga-is-automation)
+  )
 
 ;;; Observations:
 ;;; Each population member has new game.
@@ -49,6 +73,10 @@
 ;;; caching/parallel.
 ;;; 
 
+(define ga-mutex-complete (make-mutex))
+(define ga-cond-complete (make-condition-variable))
+(define ga-futures '())
+
 (define (avg list)
   (exact->inexact (/ (apply + list) (length list)))
   )
@@ -75,25 +103,51 @@
 			   #:init-keyword #:name-first #:getter name-first-get #:setter name-first-set!)
   (-name-last #:init-form (generate-name (+ 1 (random 4)))
 			  #:init-keyword #:name-last #:getter name-last-get #:setter name-last-set!)
-  (-fitness #:init-value 0.0 #:getter fitness-get #:setter fitness-set!)
-  (-is-elite #:getter is-elite #:setter is-elite-set! #:init-value #f)
+  (-fitness #:init-value 0.0)
+  (-is-elite #:init-value #f #:getter is-elite #:setter is-elite-set!)
   (-subject #:init-keyword #:subject #:getter subject-get)
+  (-fitness-mutex #:init-thunk make-mutex)
   )
 
+(define-method (inspect (self <ga-genome>))
+  (formattpps
+   "<ga-genome ~a ~a>"
+   (name-get self)
+   (subject-get self)
+   )
+  )
+
+(define-method (serialize (self <ga-genome>))
+  (append (next-method)
+		  (serialize-slots self
+						   '-name-first
+						   '-name-last
+						   '-fitness
+						   '-is-elite
+						   '-subject
+						   ))
+  )
+  
 (define-method (name-get (self <ga-genome>))
   (string-append (name-first-get self) " " (name-last-get self)))
 
-(define-method (serialize (self <ga-genome>))
-  (list (next-method)
-		(serialize-slots self
-						 '-name-first
-						 '-name-last
-						 '-fitness
-						 '-is-elite
-						 '-subject
-						 ))
+(define-method (fitness-set! (self <ga-genome>) (fitness <number>))
+  (with-mutex (slot-ref self '-fitness-mutex)
+			  (slot-set! self '-fitness fitness)
+			  )
   )
-  
+
+(define-method (fitness-get (self <ga-genome>))
+  (with-mutex (slot-ref self '-fitness-mutex)
+			  (slot-ref self '-fitness)
+			  )
+  )
+
+(define-method (fitness-add! (self <ga-genome>) (fitness <number>))
+  (with-mutex (slot-ref self '-fitness-mutex)
+			  (slot-set! self '-fitness (+ (slot-ref self '-fitness) fitness))
+			  )
+  )
 
 ;; GA methods
 
@@ -235,23 +289,24 @@
   (assert (< ndesired (1- (length genomes))))
   
   (let f ((out '()) (remaining genomes))
-	(cond ((= (length out) ndesired) (reverse out))
-		  (let* ((p0 (list-ref remaining (random (length ln))))
-				 (p1 (list-ref (delete p0 remaining) (random (length ln)))))
-			(let ((chosen (if (> (fitness-get p0) (fitness-get p1)) p0 p1)))
-			  (f (cons chosen out) (delete chosen remaining))
-			  )
+	(if (= (length out) ndesired)
+		(reverse out)
+		(let* ((p0 (list-ref remaining (random (length remaining))))
+			   (p1 (list-ref (delete p0 remaining) (random (1- (length remaining))))))
+		  (let ((chosen (if (> (fitness-get p0) (fitness-get p1)) p0 p1)))
+			(f (cons chosen out) (delete chosen remaining))
 			)
 		  )
+		)
 	)
   )
 
 (define (ga-calc-generation-stats generation evaluated-genomes stats)
   (let ((best (ga-by-best evaluated-genomes)))
-	(format #t "INSPECTION OF BEST:\n~a\n\n~a\n\n" (serialize (car best)) (serialize (cadr best)))
-	(format #t "EVOLVE POPULATION:\n Final 25 fitnesses: ~a\n"
-			(list-head (map (lambda (nn) (cons (name-get nn) (fitness-get nn))) best) (min (length best) 25))
-			)
+	(formattpp "INSPECTION OF BEST:\n~a\n\n~a\n\n" (serialize (car best)) (serialize (cadr best)))
+	(formatt "EVOLVE POPULATION:\n Final 25 fitnesses: ~a\n"
+			 (list-head (map (lambda (nn) (cons (name-get nn) (fitness-get nn))) best) (min (length best) 25))
+			 )
 	(let ((no-elites (map fitness-get (filter (negate is-elite) best))))
 	  (list generation
 			(apply max (map fitness-get best))
@@ -295,46 +350,53 @@
 		 (seed (car pending-seeds))
 		 (fitness-seed (fitness-eval (subject-get genome) game steps ga-max-moves)))
 
-	(if (is-elite genome)
-		(if (null? evaluated-seeds) (format #t "Elite genome ~a: fitness already known\n" (name-get genome)))
-		(begin
-		  (fitness-set! genome (+ (fitness-get genome) fitness-seed))
-		  (format #t "GENERATION: ~a game seed: ~a candidates remaining: ~a tested: '~a' had fitness ~a for total ~a\n"
-				  generation seed (length pending-genomes) (name-get genome) fitness-seed (fitness-get genome))
-	
-		  )
-		)
-	
-	(if (null? (cdr pending-seeds))
-		(if (null? (cdr pending-genomes))
+	(if (ga-is-automation)
+		(if (is-elite genome)
+			(if (null? evaluated-seeds) (format #t "Elite genome ~a: fitness already known\n" (name-get genome)))
 			(begin
-			  (let ((stats-new
-					 (cons (ga-calc-generation-stats generation (cons genome evaluated-genomes) stats) stats))
-					(next-generation
-					 (sort (ga-generate-next-population (cons genome evaluated-genomes))
-						   (lambda (a b) (string<? (name-last-get a) (name-last-get b)))))
-					)
-				(format #t "Stats history:\n")
-				(format #t "generation,max-fitness-with-elites,max-fitness-no-elites,min-fitness-no-elites,average\n")
-				(format #t "~a\n" (string-join (map list->csv (reverse stats-new)) "\n"))
-				(ga-evolve game
-						  '()
-						  next-generation
-						  '()
-						  (reverse (cons seed evaluated-seeds))
-						  0
-						  (1+ generation)
-						  stats-new
-						  generation-start-func
-						  game-won-func
-						  game-step-func)
-				)
+			  (fitness-add! genome fitness-seed)
+			  (format #t "GENERATION: ~a game seed: ~a candidates remaining: ~a tested: '~a' had fitness ~a for total ~a\n"
+					  generation seed (length pending-genomes) (name-get genome) fitness-seed (fitness-get genome))
+			  
 			  )
-			(ga-evolve game (cons genome evaluated-genomes) (cdr pending-genomes) '()
-					   (reverse (cons seed evaluated-seeds)) 0 generation stats generation-start-func game-won-func
-					   game-step-func))
-		(ga-evolve game evaluated-genomes pending-genomes (cons seed evaluated-seeds) (cdr pending-seeds) 0
-				  generation stats generation-start-func game-won-func game-step-func)))
+			)
+		)
+
+	(if (ga-is-automation)
+		(signal-condition-variable ga-cond-complete)
+	
+		(if (null? (cdr pending-seeds))
+			(if (null? (cdr pending-genomes))
+				(begin
+				  (for-each touch ga-futures)
+				  
+				  (let ((stats-new
+						 (cons (ga-calc-generation-stats generation (cons genome evaluated-genomes) stats) stats))
+						(next-generation
+						 (sort (ga-generate-next-population (cons genome evaluated-genomes))
+							   (lambda (a b) (string<? (name-last-get a) (name-last-get b)))))
+						)
+					(format #t "Stats history:\n")
+					(format #t "generation,max-fitness-with-elites,max-fitness-no-elites,min-fitness-no-elites,average\n")
+					(format #t "~a\n" (string-join (map list->csv (reverse stats-new)) "\n"))
+					(ga-evolve game
+							   '()
+							   next-generation
+							   '()
+							   (reverse (cons seed evaluated-seeds))
+							   0
+							   (1+ generation)
+							   stats-new
+							   generation-start-func
+							   game-won-func
+							   game-step-func)
+					)
+				  )
+				(ga-evolve game (cons genome evaluated-genomes) (cdr pending-genomes) '()
+						   (reverse (cons seed evaluated-seeds)) 0 generation stats generation-start-func game-won-func
+						   game-step-func))
+			(ga-evolve game evaluated-genomes pending-genomes (cons seed evaluated-seeds) (cdr pending-seeds) 0
+					   generation stats generation-start-func game-won-func game-step-func))))
   )
 
 (define (ga-evolve game evaluated-genomes pending-genomes evaluated-seeds pending-seeds steps generation stats
@@ -358,9 +420,29 @@
 					 generation-start-func game-won-func game-step-func)
 	  )
 	 (else
-	  (game-step-func genome game)
-	  (idle-call (lambda () (ga-evolve game evaluated-genomes pending-genomes evaluated-seeds pending-seeds
-									   (1+ steps) generation stats generation-start-func game-won-func game-step-func)))
+	  (if (ga-is-automation)
+		  (begin
+			(game-step-func genome game)
+			(idle-call
+			 (lambda () (ga-evolve game evaluated-genomes pending-genomes evaluated-seeds pending-seeds
+								   (1+ steps) generation stats generation-start-func game-won-func game-step-func))))
+		  (begin
+			(set!
+			 ga-futures
+			 (cons
+			  (make-future (lambda ()
+							 (fitness-add!
+							  genome
+							  (aisleriot-spawn
+							   (make <ga-automation-run> #:seed (car pending-seeds) #:genome genome)
+							   (the-environment)))
+							 ))
+			  ga-futures)
+			 )
+			
+			(evaluate-next game evaluated-genomes pending-genomes evaluated-seeds pending-seeds steps generation stats
+					 generation-start-func game-won-func game-step-func))
+		  )
 	  )
 	 )
 	)
@@ -369,29 +451,103 @@
 
 ;; Distributed execution
 
-;(define cmdline "XDG_DATA_DIRS="/home/david/devel/aisleriot/build/prefix/share:$XDG_DATA_DIRS" AR_CARD_THEME_PATH_SVG=cards AR_DEBUG=all GUILE_LOAD_COMPILED_PATH="/home/david/devel/aisleriot/build/prefix/lib/aisleriot/guile/2.0" prefix/bin/sol")
-(define cmd "prefix/bin/sol") ; argv?
-
-(define (aisleriot-spawn input port)
-  (let ((sock-listen (socket PF_INET SOCK_STREAM 0)))
-	(bind sock-listen AF_INET INADDR_LOOPBACK port)
-	(listen sock-listen 1)
-	(let ((pid (primitive-fork)))
-	  (if (= pid 0) (system* cmd "--port" port)
-		  (let ((sock-io (accept sock-listen)))
-			(display input sock-io)
-			(read-string sock-io))
-		  )
-	  )
-	)
+(define-class <ga-automation-run> (<serializable>)
+  (-seed #:init-keyword #:seed #:getter seed-get)
+  (-genome #:init-keyword #:genome #:getter genome-get)
   )
-  
-(define (aisleriot-automate)
-  (let ((port (cadr (member "--port" (program-arguments)))))
-     (let ((sock (socket PF_INET SOCK_STREAM 0)))
-       (connect s AF_INET INADDR_LOOPBACK port)
+
+(define-method (serialize (self <ga-automation-run>))
+  (append (next-method) (serialize-slots self '-seed '-genome)))
+
+;(define cmdline "XDG_DATA_DIRS="/home/david/devel/aisleriot/build/prefix/share:$XDG_DATA_DIRS" AR_CARD_THEME_PATH_SVG=cards AR_DEBUG=all GUILE_LOAD_COMPILED_PATH="/home/david/devel/aisleriot/build/prefix/lib/aisleriot/guile/2.0" prefix/bin/sol")
+(define cmd "prefix/bin/sol") ; use argv[0] instead?
+
+(define (ga-is-automation)
+  (member "--automate" (program-arguments)))
+
+(define (bind-with-free-port socket port)
+  (assert (<= port 65536))
+  (assert (> port 0))
+  (if (= port 65536)
+	  #f
+	  (catch 'system-error
+			 (lambda ()
+			   (bind socket AF_INET INADDR_LOOPBACK port)
+			   port
+			   )
+			 (lambda (key . args) (bind-with-free-port socket (1+ port)))
+	  ))
+  )
+
+(define (aisleriot-spawn input local-env)
+  (let* ((sock-listen (socket PF_INET SOCK_STREAM 0))
+		 (port (bind-with-free-port sock-listen 12345)))
+	(unless port (error "Couldn't bind to a port"))
+	(formatt "Bound to port ~a\n" port)
+	(listen sock-listen 1)
+	(begin-thread
+	 (formatt "Spawning child\n")
+	 (let ((pipe (open-pipe* OPEN_READ cmd "--automate" "--port" (object->string port))))
+	   (while
+		#t
+		(let ((t (read-line pipe 'split)))
+		  (formatt "CHILD ~a: ~a\n" port (car t))
+		  (if (eof-object? (cdr t)) (break)))
 	   )
 	 )
+	 (formatt "Child ~a died\n" port)
+	 )
+
+	(formatt "Waiting for connection\n")
+	(let* ((sock-io (car (accept sock-listen)))
+		   (serialized (serialize input)))
+	  (formatt "Connection accepted. Sending to port ~a\n" port)
+	  
+	  (display "(quote" sock-io)
+	  (pretty-print serialized sock-io)
+	  (display ")\n" sock-io)
+	  
+	  (force-output sock-io)
+	  (shutdown sock-io 1)
+	  
+	  (formatt "Reading from port ~a\n" port)
+	  (let ((result (get-string-all sock-io)))
+		(formatt "From child ~a server got: ~a\n" port result)
+		(close sock-io)
+		(close sock-listen)
+		(deserialize-from-string result local-env)))
+	)
+  )
+
+;; Returns ga-automation-run
+(define (ga-automation-run local-env run-func)
+  (formatt "ga-automation-run-get\n")
+  (let ((port-param (member "--port" (program-arguments))))
+	(if (not port-param)
+		(error "No port given")
+		(let ((port (string->number (cadr port-param))))
+		  (formatt "Getting automation data from port ~a\n" port)
+		  (let ((sock (socket PF_INET SOCK_STREAM 0)))
+			(connect sock AF_INET INADDR_LOOPBACK port)
+			(let* ((read (get-string-all sock))
+				   (result (deserialize-from-string read local-env)))
+;;;			  (format (current-error-port) "Client got: ~a\n" read)
+;;;			  (format (current-error-port) "Client got: ~a\n" (inspect (subject-get (genome-get result))))
+;;;			  (format (current-error-port) "Client got: ~a\n" (nodes-get (layer-input-get (subject-get (genome-get result)))))
+			  (shutdown sock 0)
+			  (fitness-set! (genome-get result) 0.0)
+			  (run-func result)
+			  (begin-thread
+			   (with-mutex ga-mutex-complete
+						   (wait-condition-variable ga-cond-complete ga-mutex-complete))
+			   (display (fitness-get (genome-get result)) sock)
+			   (close sock)
+			   (system* "/bin/kill" (object->string (getpid)))
+			  )
+			)
+		  )
+		))
+	)
   )
 
 ;;; GA setup
@@ -420,17 +576,3 @@
 
 (assert (< ga-elite-preserve-count ga-population-size))
 (assert (>= ga-population-size 2))
-
-
-
-(export
- <ga-genome>
- name-get
- subject-get
- 
- ga-population-size
- ga-training-set-size
- ga-evolve
-
- fitness-eval
- )

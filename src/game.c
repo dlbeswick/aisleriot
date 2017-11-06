@@ -1055,14 +1055,14 @@ scm_execute_idle_function (SCM callback)
 {
   AisleriotGame *game = app_game;
 
-  game->idle_call_id = 0;
-
-  if (!game_scm_call (callback, NULL, 0, NULL))
-    return FALSE;
-
   g_idle_remove_by_data(callback);
+  game->idle_call_id = 0;
   
-  return FALSE;
+  gboolean result = game_scm_call (callback, NULL, 0, NULL) == SCM_BOOL_T;
+
+  scm_gc_unprotect_object (callback);
+  
+  return result;
 }
 
 static SCM

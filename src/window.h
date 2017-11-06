@@ -57,7 +57,8 @@ GtkAction *aisleriot_window_get_action (AisleriotWindow *window,
 
 void aisleriot_window_set_game_module (AisleriotWindow * window,
                                        const char *game_module,
-                                       GRand *rand);
+                                       GRand *rand,
+									   gboolean automate);
 
 const char *aisleriot_window_get_game_module (AisleriotWindow *window);
 

@@ -1,15 +1,44 @@
-(define-module (aisleriot nn))
+(define-module (aisleriot nn)
+  #:use-module (ice-9 threads)
+  #:use-module (srfi srfi-1)
+  #:use-module (oop goops)
+  #:use-module (rnrs base)
+  #:use-module (aisleriot serialize)
+  #:use-module (aisleriot permute)
+  #:use-module (aisleriot formatt)
+  #:re-export (serialize)
+  #:export (<nn-layer>
+			<nn-link>
+			<nn-network>
+			<nn-node>
+			<nn-node-consumer>
+			<nn-node-input>
+			<nn-node-input-real>
+			<nn-node-output>
+			<nn-node-output-real>
+			<nn-layer-input>
+			
+			cache-key
+			cache-output-value!
+			cached-output
+			id-get
+			inspect
+			layer-input-get
+			layer-input-set!
+			layer-output-get
+			layers-all-get
+			layers-hidden-get
+			links-in-get
+			nn-network-fully-connected
+			nodes-get
+			randomize!
+			value-get
+			value-set!
+			)
+  )
 
-(use-modules
- (ice-9 threads)
- (srfi srfi-1)
- (oop goops)
- (rnrs base)
- (aisleriot serialize)
- (aisleriot permute)
- )
-
-(define nn-value-max 3.402823466e+38)
+;(define nn-value-max 3.402823466e+38)
+(define nn-value-max 1.0)
 
 (define-method (hash-djb (input <bytevector>) (mod <integer>))
   (let f ((hash 5381) (iinput (bytevector->u8-list input)))
@@ -31,20 +60,11 @@
   )
 
 (define-method (serialize (self <nn-network>))
-  (list (next-method)
+  (append (next-method)
 		(serialize-slots self
 						 '-layer-input
 						 '-layers-hidden
-						 '-layers-output
-						 ))
-  )
-
-(define-method (deserialize (self <nn-network>))
-  (list (next-method)
-		(serialize-slots self
-						 '-layer-input
-						 '-layers-hidden
-						 '-layers-output
+						 '-layer-output
 						 ))
   )
 
@@ -67,28 +87,31 @@
   )
 
 (define-method (inspect (self <nn-network>))
-  (format #f
-		  "<nn-network ~a\n input: ~a\n hidden: ~a\n output: ~a>"
-		  (name-get self)
-		  (inspect (slot-ref self '-layer-input) self)
-		  (map (lambda (l) (inspect l self)) (layers-hidden-get self))
-		  (inspect (layer-output-get self) self)
-		  )
+  (formattpps
+   "<nn-network \n input: ~a\n hidden: ~a\n output: ~a>"
+   (inspect (slot-ref self '-layer-input) self)
+   (map (lambda (l) (inspect l self)) (layers-hidden-get self))
+   (inspect (layer-output-get self) self)
+   )
   )
 
 ;;; Connection between neural network nodes.
-(define-class <nn-link> (<object>)
+(define-class <nn-link> (<serializable>)
   (-node-source-id #:init-keyword #:node-source-id)
   (-node-dest-id #:init-keyword #:node-dest-id)
   (-weight #:init-value 1.0 #:init-keyword #:weight) ; <real>
   )
 
+(define-method (serialize (self <nn-link>))
+  (append (next-method) (serialize-slots self '-node-source-id '-node-dest-id '-weight)))
+
 (define-method (inspect (self <nn-link>))
-  (format #f
-		  "src: ~a dst: ~a weight: ~a"
-		  (slot-ref self '-node-source-id)
-		  (slot-ref self '-node-dest-id)
-		  (slot-ref self '-weight)))
+  (formattpps
+   "src: ~a dst: ~a weight: ~a"
+   (slot-ref self '-node-source-id)
+   (slot-ref self '-node-dest-id)
+   (slot-ref self '-weight))
+  )
 
 (define-method (randomize! (self <nn-link>))
   (slot-set! self '-weight (* (+ -1.0 (random 2.0)) nn-value-max))
@@ -98,15 +121,19 @@
   (* (value-get (node-by-id network (slot-ref self '-node-source-id)) network) (slot-ref self '-weight)))
 
 ;;; Node in a neural network.
-(define-class <nn-node> (<object>)
+(define-class <nn-node> (<serializable>)
   (-id #:init-keyword #:id #:getter id-get)
   )
 
+(define-method (serialize (self <nn-node>))
+  (append (next-method) (serialize-slots self '-id)))
+
 (define-method (inspect (self <nn-node>) (network <nn-network>))
-  (format #f
-		  "<~a ~a>"
-		  (class-name (class-of self))
-		  (-display self network)))
+  (formattpps
+   "<~a ~a>"
+   (class-name (class-of self))
+   (-display self network))
+  )
 
 (define-method (-display (self <nn-node>) (network <nn-network>))
   (format #f "~a" (slot-ref self '-id)))
@@ -116,11 +143,15 @@
   (-links-in #:init-keyword #:links-in #:getter links-in-get #:setter links-in-set!) ; <list <nn-link>>
   )
 
+(define-method (serialize (self <nn-node-consumer>))
+  (append (next-method) (serialize-slots self '-links-in)))
+
 (define-method (-display (self <nn-node-consumer>) (network <nn-network>))
-  (format #f
-		  "~a links-in: ~a"
-		  (next-method)
-		  (string-join (map inspect (links-in-get self)) "\n")))
+  (formattpps
+   "~a links-in: ~a"
+   (next-method)
+   (links-in-get self))
+  )
 
 (define-method (randomize! (self <nn-node-consumer>))
   (let each-link ((ilinks (links-in-get self)))
@@ -161,20 +192,19 @@
 (define-class <nn-node-output-real> (<nn-node-output>)
   )
 
-;;; Hidden layer node.
-(define-class <nn-node-hidden> (<nn-node-consumer>)
-  )
-
 ;;; Network layer.
-(define-class <nn-layer> (<object>)
+(define-class <nn-layer> (<serializable>)
   (-nodes #:init-keyword #:nodes #:getter nodes-get)
   )
+
+(define-method (serialize (self <nn-layer>))
+  (append (next-method) (serialize-slots self '-nodes)))
 
 (define-method (clear! (self <nn-layer>))
   (for-each (lambda (n) (clear! n)) (nodes-get self)))
 
 (define-method (inspect (self <nn-layer>) (network <nn-network>))
-  (format #f
+  (formattpps
 		  "<nn-layer nodes: ~a>"
 		  (map (lambda (n) (inspect n network)) (nodes-get self)))
   )
@@ -231,7 +261,7 @@
 				  (make <nn-layer>
 					#:nodes (let make-nodes ((out '()) (i nhiddennodes))
 							  (if (= 0 i) out
-								  (make-nodes (cons (make <nn-node-hidden>
+								  (make-nodes (cons (make <nn-node-consumer>
 													  #:id (format #f "h~a~a" il i)
 													  #:links-in '())
 													out)
@@ -254,39 +284,3 @@
 		  (else (randomize! (car ilayers))
 				(each-layer (cdr ilayers)))))
   self)
-
-(export
- <nn-network>
- cache-key
- cached-output
- cache-output-value!
- layer-input-get
- layer-input-set!
- layer-output-get
- layers-hidden-get
- layers-all-get
- 
- <nn-link>
-
- <nn-node>
- id-get
- value-set!
- value-get
- 
- <nn-node-consumer>
- links-in-get
- 
- <nn-node-input>
- <nn-node-input-real>
- <nn-node-output>
- <nn-node-output-real>
- <nn-node-hidden>
-
- <nn-layer>
- nodes-get
- 
- <nn-layer-input>
- 
- randomize!
- nn-network-fully-connected
- )

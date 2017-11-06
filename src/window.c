@@ -599,7 +599,7 @@ debug_cycle_timeout_cb (DebugWindowData *data)
     return FALSE; /* don't run again */
   }
 
-  aisleriot_window_set_game_module (data->window, data->games[data->current], NULL);
+  aisleriot_window_set_game_module (data->window, data->games[data->current], NULL, FALSE);
 
   return TRUE; /* run again */
 }
@@ -628,7 +628,7 @@ debug_game_first (GtkAction *action,
     return;
 
   data->current = 0;
-  aisleriot_window_set_game_module (data->window, data->games[data->current], NULL);
+  aisleriot_window_set_game_module (data->window, data->games[data->current], NULL, FALSE);
 }
 
 static void
@@ -642,7 +642,7 @@ debug_game_last (GtkAction *action,
     return;
 
   data->current = data->n_games - 1;
-  aisleriot_window_set_game_module (data->window, data->games[data->current], NULL);
+  aisleriot_window_set_game_module (data->window, data->games[data->current], NULL, FALSE);
 }
 
 static void
@@ -656,7 +656,7 @@ debug_game_next (GtkAction *action,
     return;
 
   data->current++;
-  aisleriot_window_set_game_module (data->window, data->games[data->current], NULL);
+  aisleriot_window_set_game_module (data->window, data->games[data->current], NULL, FALSE);
 }
 
 static void
@@ -670,7 +670,7 @@ debug_game_prev (GtkAction *action,
     return;
 
   data->current--;
-  aisleriot_window_set_game_module (data->window, data->games[data->current], NULL);
+  aisleriot_window_set_game_module (data->window, data->games[data->current], NULL, FALSE);
 }
 
 static void
@@ -1150,7 +1150,7 @@ recent_game_cb (GtkAction *action,
   game_module = g_object_get_data (G_OBJECT (action), "game");
   g_return_if_fail (game_module != NULL);
 
-  aisleriot_window_set_game_module (window, game_module, NULL);
+  aisleriot_window_set_game_module (window, game_module, NULL, FALSE);
 
   ar_conf_set_string (NULL, aisleriot_conf_get_key (CONF_VARIATION), game_module);
 }
@@ -2286,6 +2286,7 @@ typedef struct {
   AisleriotWindow *window;
   char *game_module;
   GRand *rand;
+  gboolean automate;
 } LoadIdleData;
 
 static void
@@ -2294,7 +2295,7 @@ load_error_response_cb (GtkWidget *dialog,
                         AisleriotWindow *window)
 {
   /* Load the default game */
-  aisleriot_window_set_game_module (window, DEFAULT_VARIATION, NULL);
+  aisleriot_window_set_game_module (window, DEFAULT_VARIATION, NULL, FALSE);
 
   gtk_widget_destroy (dialog);
 }
@@ -2356,6 +2357,10 @@ load_idle_cb (LoadIdleData *data)
 
   gtk_widget_grab_focus (GTK_WIDGET (priv->board));
 
+  printf("%d\n", data->automate);
+  if (data->automate)
+    aisleriot_game_autoplay(priv->game);
+
   return FALSE;
 }
 
@@ -2383,7 +2388,8 @@ free_load_idle_data (LoadIdleData *data)
 void
 aisleriot_window_set_game_module (AisleriotWindow *window,
                                   const char *game_module,
-                                  GRand *rand)
+                                  GRand *rand,
+                                  gboolean automate)
 {
   AisleriotWindowPrivate *priv = window->priv;
   LoadIdleData *data;
@@ -2397,6 +2403,7 @@ aisleriot_window_set_game_module (AisleriotWindow *window,
   data->window = window;
   data->game_module = g_strdup (game_module);
   data->rand = rand; /* adopted */
+  data->automate = automate;
 
   priv->load_idle_id = g_idle_add_full (G_PRIORITY_LOW,
                                         (GSourceFunc) load_idle_cb,

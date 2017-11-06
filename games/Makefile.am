@@ -1,6 +1,7 @@
 NULL = 
 
 module_GUILE = \
+	aisleriot/formatt.scm \
 	aisleriot/api.scm \
 	aisleriot/serialize.scm \
 	aisleriot/nn.scm \

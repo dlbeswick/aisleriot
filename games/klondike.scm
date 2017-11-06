@@ -14,20 +14,23 @@
 ; You should have received a copy of the GNU General Public License
 ; along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-(use-modules
- (oop goops)
- (ice-9 format)
- (ice-9 threads)
- (srfi srfi-1)
- (rnrs base)
- (rnrs bytevectors)
- (aisleriot interface)
- (aisleriot api)
- (aisleriot serialize)
- (aisleriot ga)
- (aisleriot nn)
- (aisleriot permute)
- )
+(define-module (aisleriot klondike)
+  #:use-module (ice-9 format)
+  #:use-module (ice-9 local-eval)
+  #:use-module (ice-9 threads)
+  #:use-module (srfi srfi-1)
+  #:use-module (rnrs base)
+  #:use-module (rnrs bytevectors)
+  #:use-module (oop goops)
+  #:use-module (aisleriot interface)
+  #:use-module (aisleriot api)
+  #:use-module (aisleriot serialize)
+  #:use-module (aisleriot ga)
+  #:use-module (aisleriot nn)
+  #:use-module (aisleriot permute)
+  
+  #:duplicates (merge-generics replace warn-override-core warn last)
+  )
 
 (define deal-one #t)    ;deal one card at a time from stock to waste, 2 redeals
 (define deal-three #f)  ;deal three cards at a time from stock to waste
@@ -47,7 +50,7 @@
 
 ;;; A potential game move. It need not be valid.
 (define-class <move> (<object>)
-  -game #:init-keyword #:game
+  (-game #:init-keyword #:game)
   )
 
 (define-method (id-get (self <move>))
@@ -140,6 +143,9 @@
   (-card #:init-keyword #:card #:getter legacy-get)
   )
 
+(define-method (serialize (self <card>))
+  (list (next-method) (serialize-slots self '-card)))
+
 (define-method (visible? (self <card>))
   (is-visible? (slot-ref self '-card)))
 
@@ -152,32 +158,37 @@
 (define-method (inspect (self <card>))
   (format #f "#<card ~a>" (legacy-get self)))
 
-(define-class <slot> (<object>)
+;; A slot in which cards can be placed
+(define-class <slot-card> (<object>)
   (-id #:init-keyword #:id #:getter id-get)
   )
 
-(define-method (equal? (a <slot>) (b <slot>))
+(define-method (serialize (self <slot-card>))
+  (list (next-method) (serialize-slots self '-id)))
+
+(define-method (equal? (a <slot-card>) (b <slot-card>))
   (equal? (id-get a) (id-get b)))
 
-(define-method (cards-get (self <slot>))
+(define-method (cards-get (self <slot-card>))
   (map (lambda (c) (make <card> #:card c)) (get-cards (id-get self))))
 
-(define-method (empty? (self <slot>))
+(define-method (empty? (self <slot-card>))
   (empty-slot? (id-get self)))
 
-(define-method (expanded? (self <slot>))
+(define-method (expanded? (self <slot-card>))
   (is-slot-expanded? (id-get self)))
 
-(define-method (card-top-make-visible (self <slot>))
+(define-method (card-top-make-visible (self <slot-card>))
   (make-visible-top-card (id-get self)))
 
-(define-method (inspect (slot <slot>))
+(define-method (inspect (slot <slot-card>))
   (format #f "#<slot id: ~a>" (id-get slot)))
 
 (define-class <game> (<object>)
   (-tableau #:init-keyword #:tableau #:getter tableau-get)
   (-foundation #:init-keyword #:foundation #:getter foundation-get)
-  (-waste #:init-keyword #:waste #:getter waste-get))
+  (-waste #:init-keyword #:waste #:getter waste-get)
+  )
 
 (define-method (slots-all (self <game>))
   (append (tableau-get self)
@@ -237,7 +248,7 @@
 (define (nn-encode-no-card)
   '(0 0 0))
 
-(define-method (nn-encode (self <slot>))
+(define-method (nn-encode (self <slot-card>))
   (append
    (list (length (cards-get self)))
    (cdr (if (empty? self) ; cdr = ignore 'visible' flag
@@ -634,8 +645,8 @@
 	  (unless (null? moves)
 			  ;; Try all moves on network
 			  (let ((evals
-					 (par-map (lambda (m) (cons m (success-probability network m game)))
-							  (reverse moves))))
+					 (map (lambda (m) (cons m (success-probability network m game)))
+						  (reverse moves))))
 				(let ((by-score (sort evals (lambda (ala alb) (> (cdr ala) (cdr alb))))))
 ;;;				(for-each (lambda (al) (format #t "Success chance for move ~a: ~a\n" (inspect (car al)) (cdr al))) by-score)
 				  (execute gs (caar by-score))
@@ -646,34 +657,55 @@
 	)
   )
 			
-
-
-(define (autoplay)
-  (display "Autoplay begins\n")
-  (set! *random-state* (random-state-from-platform))
-  (let* ((game (make <game>
-				 #:tableau (map (lambda (id) (make <slot> #:id id)) tableau)
-				 #:foundation (map (lambda (id) (make <slot> #:id id)) foundation)
-				 #:waste (make <slot> #:id waste)
-				 ))
-		 (networks (par-map
-					(lambda (n)
-					  (format #t "Initialize genome ~a\n" n)
-					  (make <ga-genome> #:subject (randomize! (nn-network-klondike game))))
-					(iota ga-population-size)))
-		 )
+(define (automate game automation)
+  (let ((genome (genome-get automation))
+		 (seed (seed-get automation)))
 	(idle-call
 	 (lambda () (ga-evolve game
 						   '()
-						   networks
+						   (list genome)
 						   '()
-						   (iota ga-training-set-size)
+						   (list seed)
 						   0
 						   0
 						   '()
 						   meta-new-game-with-seed
 						   game-won
-						   game-step))))
+						   game-step)))
+	)
+  )
+
+(define (autoplay)
+  (display "Autoplay begins\n")
+  (set! *random-state* (random-state-from-platform))
+  (let ((game (make <game>
+				#:tableau (map (lambda (id) (make <slot-card> #:id id)) tableau)
+				#:foundation (map (lambda (id) (make <slot-card> #:id id)) foundation)
+				#:waste (make <slot-card> #:id waste)
+				)))
+	(if (ga-is-automation)
+		(ga-automation-run (the-environment) (lambda (auto) (automate game auto)))
+		(idle-call
+		 (lambda ()
+		  (let* ((genomes
+				  (par-map
+				   (lambda (n)
+					 (make <ga-genome> #:subject (randomize! (nn-network-klondike game))))
+				   (iota ga-population-size))))
+			(ga-evolve game
+					   '()
+					   genomes
+					   '()
+					   (iota ga-training-set-size)
+					   0
+					   0
+					   '()
+					   meta-new-game-with-seed
+					   game-won
+					   game-step))
+		  ))
+		)
+	)
   )
 
 (define (get-hint)

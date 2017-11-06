@@ -51,6 +51,8 @@ typedef struct {
   char *variation;
   gint seed; /* unused */
   gboolean freecell;
+  gboolean automate;
+  char *port;
 } AppData;
 
 static void
@@ -62,11 +64,13 @@ add_main_options (GOptionContext *option_context,
       N_("Select the game type to play"), N_("NAME") },
     { "freecell", 0, G_OPTION_FLAG_HIDDEN, G_OPTION_ARG_NONE, &data->freecell,
       NULL, NULL },
+    { "automate", 0, 0, G_OPTION_ARG_NONE, &data->automate, N_("Play automatically"), NULL },
 
     /* Ignored option, for backward compat with saved session */
     { "seed", 's', G_OPTION_FLAG_HIDDEN, G_OPTION_ARG_STRING, &data->seed,
       NULL, NULL },
-
+    { "port", 0, 0, G_OPTION_ARG_STRING, &data->port, NULL, NULL },
+	
     { NULL }
   };
 
@@ -129,7 +133,7 @@ main_prog (void *closure, int argc, char *argv[])
 
   g_assert (data.variation != NULL || data.freecell);
 
-  application = ar_application_new (data.variation, data.freecell);
+  application = ar_application_new (data.variation, data.freecell, data.automate);
   status = g_application_run (G_APPLICATION (application), 0, NULL);
   g_object_unref (application);
 

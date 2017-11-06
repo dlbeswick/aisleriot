@@ -55,6 +55,7 @@ struct _ArApplicationPrivate
   char *variation;
   gint seed; /* unused */
   gboolean freecell; /* unused */
+  gboolean automate;
 };
 
 #if !GTK_CHECK_VERSION (3, 6, 0)
@@ -236,9 +237,9 @@ ar_application_startup (GApplication *application)
   priv->window = AISLERIOT_WINDOW (aisleriot_window_new (GTK_APPLICATION (application)));
 
   if (priv->freecell) {
-    aisleriot_window_set_game_module (priv->window, FREECELL_VARIATION, NULL);
+    aisleriot_window_set_game_module (priv->window, FREECELL_VARIATION, NULL, priv->automate);
   } else {
-    aisleriot_window_set_game_module (priv->window, priv->variation, NULL);
+    aisleriot_window_set_game_module (priv->window, priv->variation, NULL, priv->automate);
   }
 }
 
@@ -277,7 +278,8 @@ ar_application_class_init (ArApplicationClass *class)
 
 GtkApplication *
 ar_application_new (const char *variation,
-                    gboolean freecell)
+                    gboolean freecell,
+					gboolean automate)
 {
   ArApplication *app;
 
@@ -287,6 +289,7 @@ ar_application_new (const char *variation,
                       NULL);
   app->priv->variation = g_strdup (variation);
   app->priv->freecell = freecell != FALSE;
+  app->priv->automate = automate != FALSE;
 
   return GTK_APPLICATION (app);
 }
