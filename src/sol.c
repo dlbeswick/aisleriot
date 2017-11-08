@@ -52,7 +52,7 @@ typedef struct {
   gint seed; /* unused */
   gboolean freecell;
   gboolean automate;
-  char *port;
+  char *host;
 } AppData;
 
 static void
@@ -69,7 +69,9 @@ add_main_options (GOptionContext *option_context,
     /* Ignored option, for backward compat with saved session */
     { "seed", 's', G_OPTION_FLAG_HIDDEN, G_OPTION_ARG_STRING, &data->seed,
       NULL, NULL },
-    { "port", 0, 0, G_OPTION_ARG_STRING, &data->port, NULL, NULL },
+
+	/* automation */
+    { "host", 0, 0, G_OPTION_ARG_STRING, &data->host, NULL, NULL },
 	
     { NULL }
   };

@@ -420,9 +420,18 @@
 		 (sort (ga-generate-next-population genomes)
 			   (lambda (a b) (string<? (name-last-get a) (name-last-get b)))))
 		)
-	(format #t "Stats history:\n")
-	(format #t "generation,max-fitness-with-elites,max-fitness-no-elites,min-fitness-no-elites,average\n")
-	(format #t "~a\n" (string-join (map list->csv (reverse stats-new)) "\n"))
+	(call-with-output-file
+		"stats.txt"
+		(lambda (file)
+		  (for-each
+		   (lambda (port)
+			 (format port "Stats history:\n")
+			 (format port "generation,max-fitness-with-elites,max-fitness-no-elites,min-fitness-no-elites,average\n")
+			 (format port "~a\n" (string-join (map list->csv (reverse stats-new)) "\n"))
+			 )
+		   (list #t file)
+		   )
+		  ))
 	(ga-evolve next-generation seeds stats-new (1+ generation))
 	)
   )
@@ -441,7 +450,7 @@
 	  #f
 	  (catch 'system-error
 			 (lambda ()
-			   (bind socket AF_INET INADDR_LOOPBACK port)
+			   (bind socket AF_INET INADDR_ANY port)
 			   port
 			   )
 			 (lambda (key . args) (bind-with-free-port socket (1+ port)))
@@ -484,12 +493,12 @@
 		 (port (bind-with-free-port sock-listen 12345)))
 	(unless port (error "Couldn't bind to a port"))
 	(formatt "Bound to port ~a\n" port)
-	(listen sock-listen nchildren)
+	(listen sock-listen 64)
 	
 	(for-each (lambda (i)
 				(begin-thread
 				 (formatt "Spawning child ~a\n" i)
-				 (let ((pipe (open-pipe* OPEN_READ cmd "--automate" "--port" (object->string port))))
+				 (let ((pipe (open-pipe* OPEN_READ cmd "--automate" "--host" (format #f "127.0.0.1:~a"  port))))
 				   (while
 					#t
 					(let ((t (read-line pipe 'split)))
@@ -507,20 +516,20 @@
 	  (if (null? t-run-func)
 		  (begin (sleep 1) (formatt "Waiting for run\n"))
 		  (begin
-			(formatt "Waiting for connection\n")
+;;;			(formatt "Waiting for connection\n")
 			(let* ((sock-io (car (accept sock-listen)))
 					(serialized (serialize (car t-run-func))))
 			   (begin-thread
-				(formatt "Connection accepted. Sending to port ~a\n" port)
+;;;				(formatt "Connection accepted. Sending to port ~a\n" port)
 				
 				(format sock-io "(quote ~s)" serialized)
 				
 				(force-output sock-io)
 				(shutdown sock-io 1)
 				
-				(formatt "Reading from port ~a\n" port)
+;;;				(formatt "Reading from port ~a\n" port)
 				(let ((result (get-string-all sock-io)))
-				  (formatt "From child ~a server got: ~a\n" port result)
+;;;				  (formatt "From child ~a server got: ~a\n" port result)
 				  (close sock-io)
 				  ((cdr t-run-func) (deserialize-from-string result local-env))
 				  )
@@ -536,18 +545,20 @@
 
 ;; Returns ga-automation-run
 (define (ga-client-receive-automation-run local-env run-func complete-func)
-  (let ((port-param (member "--port" (program-arguments))))
-	(if (not port-param)
-		(error "No port given")
-		(let ((port (string->number (cadr port-param))))
+  (let ((host-param (member "--host" (program-arguments))))
+	(if (not host-param)
+		(error "No host given")
+		(let* ((split-param (string-split (cadr host-param) #\:))
+			   (host (car split-param))
+			   (port (string->number (cadr split-param))))
 		  (let ((sock (socket PF_INET SOCK_STREAM 0)))
 			(let f ()
 				   (catch 'system-error
 						  (lambda ()
 							(formatt "Waiting to get automation data from port ~a\n" port)
-							(connect sock AF_INET INADDR_LOOPBACK port)
+							(connect sock (addrinfo:addr (car (getaddrinfo host (object->string port) AI_NUMERICSERV))))
 							)
-						  (lambda (key . args) (sleep 1) (f)))
+						  (lambda (key . args) (formatt "~a ~a\n" key args) (sleep 1) (f)))
 				   )
 			(catch 'system-error
 				   (lambda ()
@@ -578,7 +589,7 @@
 ;;; GA setup
 (define ga-test #f)
 
-(define ga-population-size 4)
+(define ga-population-size 24)
 (define ga-training-set-size 10)
 
 (define ga-combine-chance 0.5)
