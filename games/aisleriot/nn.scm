@@ -37,8 +37,7 @@
 			)
   )
 
-;(define nn-value-max 3.402823466e+38)
-(define nn-value-max 1.0)
+(define nn-value-max 3.402823466e+38)
 
 (define-method (hash-djb (input <bytevector>) (mod <integer>))
   (let f ((hash 5381) (iinput (bytevector->u8-list input)))

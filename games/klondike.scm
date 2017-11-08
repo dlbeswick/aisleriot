@@ -290,7 +290,7 @@
 (define-class <nn-network-klondike> (<nn-network>)
   )
 
-(define-method (fitness-eval (self <nn-network-klondike>) (game <game>) (steps-elapsed <integer>) (steps-max <integer>))
+(define-method (fitness-eval game steps-elapsed steps-max)
   (apply + (- steps-max steps-elapsed)
 		 (map (lambda (slot) (* 5 (length (cards-get slot)))) (foundation-get game)))
   )
@@ -641,69 +641,52 @@
 	   (lambda (m)
 ;;;			 (format #t "~a\n" (inspect m))
 		 (set! moves (cons m moves))))
-	  
-	  (unless (null? moves)
-			  ;; Try all moves on network
-			  (let ((evals
-					 (map (lambda (m) (cons m (success-probability network m game)))
-						  (reverse moves))))
-				(let ((by-score (sort evals (lambda (ala alb) (> (cdr ala) (cdr alb))))))
+
+	  ;; Try all moves on network
+	  (let ((evals
+			 (map (lambda (m) (cons m (success-probability network m game)))
+				  (reverse moves))))
+		(let ((by-score (sort evals (lambda (ala alb) (> (cdr ala) (cdr alb))))))
 ;;;				(for-each (lambda (al) (format #t "Success chance for move ~a: ~a\n" (inspect (car al)) (cdr al))) by-score)
-				  (execute gs (caar by-score))
-				  )
-				)
-			  )
+		  (unless (null? by-score) (execute gs (caar by-score)))
+		  )
+		)
 	  )
-	)
-  )
-			
-(define (automate game automation)
-  (let ((genome (genome-get automation))
-		 (seed (seed-get automation)))
-	(idle-call
-	 (lambda () (ga-evolve game
-						   '()
-						   (list genome)
-						   '()
-						   (list seed)
-						   0
-						   0
-						   '()
-						   meta-new-game-with-seed
-						   game-won
-						   game-step)))
 	)
   )
 
 (define (autoplay)
   (display "Autoplay begins\n")
-  (set! *random-state* (random-state-from-platform))
   (let ((game (make <game>
 				#:tableau (map (lambda (id) (make <slot-card> #:id id)) tableau)
 				#:foundation (map (lambda (id) (make <slot-card> #:id id)) foundation)
 				#:waste (make <slot-card> #:id waste)
 				)))
 	(if (ga-is-automation)
-		(ga-automation-run (the-environment) (lambda (auto) (automate game auto)))
-		(idle-call
-		 (lambda ()
-		  (let* ((genomes
-				  (par-map
-				   (lambda (n)
-					 (make <ga-genome> #:subject (randomize! (nn-network-klondike game))))
-				   (iota ga-population-size))))
-			(ga-evolve game
-					   '()
-					   genomes
-					   '()
-					   (iota ga-training-set-size)
-					   0
-					   0
-					   '()
-					   meta-new-game-with-seed
-					   game-won
-					   game-step))
-		  ))
+		(let f ()
+		  (idle-call
+		   (lambda ()
+			 (set! *random-state* (random-state-from-platform))
+			 (ga-client-receive-automation-run
+			  (the-environment)
+			  (lambda (run)
+				(ga-evaluate run 0 meta-new-game-with-seed game-won
+							 (lambda (genome) (game-step genome game))
+							 (lambda (steps steps-max)
+							   (fitness-eval game steps steps-max)))
+				)
+			  (lambda () (idle-call f))
+			  )
+			 )
+		   )
+		  )
+		(ga-evolve (par-map
+					(lambda (n)
+					  (make <ga-genome> #:subject (randomize! (nn-network-klondike game))))
+					(iota ga-population-size))
+				   (iota ga-training-set-size)
+				   '()
+				   0)
 		)
 	)
   )

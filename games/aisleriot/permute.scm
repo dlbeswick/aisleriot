@@ -1,8 +1,5 @@
-(define-module (aisleriot permute))
-
-(use-modules
- (srfi srfi-1)
- )
+(define-module (aisleriot permute)
+  #:use-module (srfi srfi-1))
 
 ;; Return the next list of lists in the sequence:
 ;; ((1 2 3) (a b))
@@ -51,3 +48,9 @@
 					   (proc (fold (lambda (e p) (cons p (car e))) (caar r) (cdr r)))
 					   (f (llists-permute-iterate l r) (1+ cpermutations))))))))
 
+(define-public (permute . l)
+  (let ((result '()))
+	(apply permute-it (lambda (alist) (set! result (cons alist result))) l)
+	result
+	)
+  )
