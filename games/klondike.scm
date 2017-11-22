@@ -676,6 +676,7 @@
 							   (fitness-eval game steps steps-max)))
 				)
 			  (lambda () (idle-call f))
+			  (lambda () (idle-call f))
 			  )
 			 )
 		   )

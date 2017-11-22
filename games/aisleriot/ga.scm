@@ -1,4 +1,5 @@
 (define-module (aisleriot ga)
+  #:use-module (ice-9 atomic)
   #:use-module (ice-9 futures)
   #:use-module (ice-9 local-eval)
   #:use-module (ice-9 popen)
@@ -22,7 +23,7 @@
 			name-get
 			seed-get
 			subject-get
-			
+
 			ga-population-size
 			ga-training-set-size
 			ga-evolve
@@ -102,6 +103,11 @@
 (define-class <ga-automation-run> (<serializable>)
   (-seed #:init-keyword #:seed #:getter seed-get)
   (-genome #:init-keyword #:genome #:getter genome-get)
+  (-state #:init-form (make-atomic-box 'ready))
+  )
+
+(define-method (state-get (self <ga-automation-run>))
+  (atomic-box-ref (slot-ref self '-state))
   )
 
 (define-method (inspect (self <ga-automation-run>))
@@ -396,13 +402,13 @@
 (define spawned #f)
 
 (define (ga-evolve genomes seeds stats generation)
-  (unless spawned (set! spawned #t) (begin-thread (aisleriot-server 6 (the-environment))))
+  (unless spawned (set! spawned #t) (begin-thread (aisleriot-server ga-n-child-spawns (the-environment))))
   
   (permute-it (lambda (t)
 				(let ((run (make <ga-automation-run> #:genome (car t) #:seed (cdr t))))
-				  (ga-push! run (lambda (result)
+				  (ga-queue! run (lambda (result)
 								  (formatt "Completed ~a with result ~a (~a remaining)\n" (inspect run) result
-										   (ga-length))
+										   (ga-queue-remaining))
 								  (fitness-add! (genome-get run) result)
 								  ))
 				  )
@@ -411,8 +417,8 @@
 			  seeds
 			  )
 
-  (formatt "Waiting to process ~a runs\n" (ga-length))
-  (ga-drain)
+  (formatt "Waiting to process ~a runs\n" (ga-queue-remaining))
+  (ga-queue-drain)
   
   (let ((stats-new
 		 (cons (ga-calc-generation-stats generation genomes stats) stats))
@@ -425,7 +431,7 @@
 		(lambda (file)
 		  (for-each
 		   (lambda (port)
-			 (format port "Stats history:\n")
+			 (format port (pretty-string ga-config))
 			 (format port "generation,max-fitness-with-elites,max-fitness-no-elites,min-fitness-no-elites,average\n")
 			 (format port "~a\n" (string-join (map list->csv (reverse stats-new)) "\n"))
 			 )
@@ -458,34 +464,66 @@
   )
 
 (define ga-queue-mutex (make-mutex))
+(define ga-queue-change-next-mutex (make-recursive-mutex))
+(define ga-queue-change-drain-mutex (make-recursive-mutex))
+(define ga-queue-change-cond (make-condition-variable))
 (define ga-queue '())
-(define-method (ga-push! (run <ga-automation-run>) on-complete)
+
+(define-method (ga-queue! (run <ga-automation-run>) on-complete)
   (with-mutex
    ga-queue-mutex
+   (assert (not (memq run (map car ga-queue))))
    (set! ga-queue (append ga-queue (list (cons run on-complete))))
    )
+  (ga-retry! run)
   )
 
-(define (ga-pop!)
+(define-method (ga-retry! (run <ga-automation-run>))
+  (assert (with-mutex ga-queue-mutex (memq run (map car ga-queue))))
+  (atomic-box-set! (slot-ref run '-state) 'ready)
+  (broadcast-condition-variable ga-queue-change-cond)
+  )
+
+(define (ga-queue-clear!)
+  (assert (= (ga-queue-remaining) 0))
+  (with-mutex ga-queue-mutex (set! ga-queue '()))
+  (broadcast-condition-variable ga-queue-change-cond)
+  )
+
+(define (ga-queue-next-try)
   (with-mutex
    ga-queue-mutex
-   (if (null? ga-queue)
-	   #nil
-	   (let ((result (car ga-queue)))
-		 (set! ga-queue (cdr ga-queue))
-		 result)
-	   )
+   (let ((result (find (lambda (t) (eq? (state-get (car t)) 'ready)) ga-queue)))
+	 (if result (atomic-box-set! (slot-ref (car result) '-state) 'processing))
+	 result
+	 )
    )
   )
 
-(define (ga-length)
-  (with-mutex ga-queue-mutex (length ga-queue))
+(define (ga-queue-next)
+  (or (ga-queue-next-try)
+	  (begin
+		(with-mutex ga-queue-change-next-mutex
+					(wait-condition-variable ga-queue-change-cond ga-queue-change-next-mutex))
+		(ga-queue-next)))
   )
 
-(define (ga-drain)
-  (while (> (ga-length) 0)
-		 (sleep 1)
+(define-method (ga-queue-complete! (run <ga-automation-run>))
+  (atomic-box-set! (slot-ref run '-state) 'complete)
+  (broadcast-condition-variable ga-queue-change-cond)
+  )
+
+(define (ga-queue-remaining)
+  (with-mutex ga-queue-mutex (apply + (map (lambda (x) (if (eq? (state-get (car x)) 'complete) 0 1)) ga-queue)))
+  )
+
+(define (ga-queue-drain)
+  (while (> (ga-queue-remaining) 0)
+		 (with-mutex ga-queue-change-drain-mutex
+					 (wait-condition-variable ga-queue-change-cond ga-queue-change-drain-mutex)
+					 )
 		 )
+  (ga-queue-clear!)
   )
 
 (define (aisleriot-server nchildren local-env)
@@ -512,39 +550,49 @@
 			  (iota nchildren)
 			  )
 
-	(let f ((t-run-func '()))
-	  (if (null? t-run-func)
-		  (begin (sleep 1) (formatt "Waiting for run\n"))
-		  (begin
+	(let f ((run-t-func (ga-queue-next)))
 ;;;			(formatt "Waiting for connection\n")
-			(let* ((sock-io (car (accept sock-listen)))
-					(serialized (serialize (car t-run-func))))
-			   (begin-thread
+	  (let* ((sock-io (car (accept sock-listen)))
+			 (serialized (serialize (car run-t-func))))
+		(begin-thread
 ;;;				(formatt "Connection accepted. Sending to port ~a\n" port)
-				
-				(format sock-io "(quote ~s)" serialized)
-				
-				(force-output sock-io)
-				(shutdown sock-io 1)
-				
+
+		 (catch
+		  #t
+		  (lambda ()
+			(format sock-io "(quote ~s)" serialized)
+			
+			(force-output sock-io)
+			(shutdown sock-io 1)
+			
 ;;;				(formatt "Reading from port ~a\n" port)
-				(let ((result (get-string-all sock-io)))
+			(let ((result (get-string-all sock-io)))
 ;;;				  (formatt "From child ~a server got: ~a\n" port result)
-				  (close sock-io)
-				  ((cdr t-run-func) (deserialize-from-string result local-env))
+			  (close sock-io)
+			  (let ((deserialized (deserialize-from-string result local-env)))
+				(if (number? deserialized) ((cdr run-t-func) deserialized) (throw 'ga-error deserialized)))
+			  (ga-queue-complete! (car run-t-func))
+			  )
+			)
+		  (lambda (key . args)
+			(if (memq key '(system-error ga-error))
+				(begin
+				  (formatt "Error: ~a ~a (retrying run)\n" key args)
+				  (ga-retry! (car run-t-func))
 				  )
-				)
-			   )
+				(apply throw key args))
 			)
 		  )
-	  (f (ga-pop!))
+		 )
+		)
+	  (f (ga-queue-next))
 	  )
 	(close sock-listen)
 	)
   )
 
 ;; Returns ga-automation-run
-(define (ga-client-receive-automation-run local-env run-func complete-func)
+(define (ga-client-receive-automation-run local-env run-func complete-func error-func)
   (let ((host-param (member "--host" (program-arguments))))
 	(if (not host-param)
 		(error "No host given")
@@ -579,7 +627,7 @@
 						)
 					   )
 					 )
-				   (lambda (key . args) (formatt "Error: ~a ~a\n" key args))
+				   (lambda (key . args) (formatt "Error: ~a ~a\n" key args) (error-func))
 				   )
 		  )
 		))
@@ -588,8 +636,9 @@
 
 ;;; GA setup
 (define ga-test #f)
+(define ga-n-child-spawns 0)
 
-(define ga-population-size 24)
+(define ga-population-size 48)
 (define ga-training-set-size 10)
 
 (define ga-combine-chance 0.5)
@@ -603,8 +652,23 @@
 ;; The degree to which genomes with better scores are favoured for breeding (proportionate only)
 (define ga-factor-parent-best 0.5)
 
-;(define ga-select-parents ga-select-parents-fitness-proportionate)
+;;(define ga-select-parents ga-select-parents-fitness-proportionate)
 (define ga-select-parents ga-select-parents-tournament)
+
+(define ga-config
+  `(
+   (ga-test . ,ga-test)
+   (ga-population-size . ,ga-population-size)
+   (ga-training-set-size . ,ga-training-set-size)
+   (ga-combine-chance . ,ga-combine-chance)
+   (ga-mutation-chance . ,ga-mutation-chance)
+   (ga-max-moves . ,ga-max-moves)
+   (ga-elite-preserve-count . ,ga-elite-preserve-count)
+   (ga-value-max . ,ga-value-max)
+   (ga-factor-parent-best . ,ga-factor-parent-best)
+   (ga-select-parents . ,ga-select-parents)
+   )
+  )
 
 (if ga-test
 	(begin
