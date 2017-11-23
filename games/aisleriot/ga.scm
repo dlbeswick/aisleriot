@@ -447,7 +447,7 @@
 (define cmd "prefix/bin/sol") ; use argv[0] instead?
 
 (define (ga-is-automation)
-  (member "--automate" (program-arguments)))
+  (and (member "--automate" (program-arguments)) (member "--host" (program-arguments))))
 
 (define (bind-with-free-port socket port)
   (assert (<= port 65536))

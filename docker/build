@@ -1,0 +1,9 @@
+#!/bin/sh -ex
+
+rsync -lrtv --exclude=build --exclude=.git --delete /src-in/ /src/aisleriot
+
+cd /src/aisleriot \
+	&& (mkdir build || true) \
+	&& cd build \
+	&& (test -f ./config.status || ../configure) \
+	&& make -j9 install
