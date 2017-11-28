@@ -3,6 +3,7 @@
   #:use-module (srfi srfi-1)
   #:use-module (oop goops)
   #:use-module (rnrs base)
+  #:use-module (rnrs bytevectors)
   #:use-module (aisleriot serialize)
   #:use-module (aisleriot permute)
   #:use-module (aisleriot formatt)
@@ -113,8 +114,18 @@
   )
 
 (define-method (randomize! (self <nn-link>))
-  (slot-set! self '-weight (* (+ -1.0 (random 2.0)) nn-value-max))
-  self)
+  (let ((bv (make-bytevector 64)))
+	(bytevector-u64-native-set! bv 0 (random (ash 1 63)))
+	(let ((result (bytevector-ieee-double-native-ref bv 0)))
+	  (if (finite? result)
+		  (begin
+			(slot-set! self '-weight result)
+			self
+			)
+		  (randomize! self))
+	  )
+	)
+  )
 
 (define-method (contribution (self <nn-link>) (network <nn-network>))
   (* (value-get (node-by-id network (slot-ref self '-node-source-id)) network) (slot-ref self '-weight)))

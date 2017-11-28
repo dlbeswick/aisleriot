@@ -10,6 +10,7 @@
   #:use-module (srfi srfi-26)
   #:use-module (oop goops)
   #:use-module (rnrs base)
+  #:use-module (rnrs bytevectors)
   #:use-module (aisleriot formatt)
   #:use-module (aisleriot serialize)
   #:use-module (aisleriot nn)
@@ -203,7 +204,12 @@
   )
 
 (define-method (ga-mutate (self <number>))
-  (* (+ -1.0 (random 2.0)) ga-value-max)
+  (let ((bv (make-bytevector 64)))
+	(bytevector-u64-native-set! bv 0 (random (ash 1 63)))
+	(let ((result (bytevector-ieee-double-native-ref bv 0)))
+	  (if (finite? result) result (ga-mutate self))
+	  )
+	)
   )
 
 (define-method (ga-generate-next-population evaluated-genomes)
@@ -357,7 +363,7 @@
 			(apply max (map fitness-get best))
 			(apply max no-elites)
 			(apply min no-elites)
-			(avg no-elites)
+			(avg (map fitness-get best))
 			(time-second (time-difference (car (sort (map time-end-get runs) time>?))
 										  (car (sort (map time-start-get runs) time<=?))))
 			(time-second (reduce add-duration (duration-elapsed (car runs)) (map duration-elapsed runs)))
@@ -455,7 +461,7 @@
 									   (formatt "Completed ~a with result ~a (~a remaining)\n"
 												(inspect run)
 												result
-												(cadr (lengths queue-runs))
+												(apply + (lengths queue-runs))
 												)
 									   (fitness-add! (genome-get run) result)
 									   ))
