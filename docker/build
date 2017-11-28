@@ -1,6 +1,6 @@
 #!/bin/sh -ex
 
-rsync -lrtv --exclude=build --exclude=.git --delete /src-in/ /src/aisleriot
+rsync -lrtv --exclude=build --exclude=.git --exclude='.emacs*' --delete /src-in/ /src/aisleriot
 
 cd /src/aisleriot \
 	&& (mkdir build || true) \

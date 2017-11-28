@@ -19,6 +19,7 @@
   #:use-module (ice-9 local-eval)
   #:use-module (ice-9 threads)
   #:use-module (srfi srfi-1)
+  #:use-module (srfi srfi-26)
   #:use-module (rnrs base)
   #:use-module (rnrs bytevectors)
   #:use-module (oop goops)
@@ -643,13 +644,10 @@
 		 (set! moves (cons m moves))))
 
 	  ;; Try all moves on network
-	  (let ((evals
-			 (map (lambda (m) (cons m (success-probability network m game)))
-				  (reverse moves))))
-		(let ((by-score (sort evals (lambda (ala alb) (> (cdr ala) (cdr alb))))))
+	  (let* ((evals (map (lambda (m) (cons m (success-probability network m game))) (reverse moves)))
+			 (by-score (sort evals (lambda (ala alb) (> (cdr ala) (cdr alb))))))
 ;;;				(for-each (lambda (al) (format #t "Success chance for move ~a: ~a\n" (inspect (car al)) (cdr al))) by-score)
-		  (unless (null? by-score) (execute gs (caar by-score)))
-		  )
+		(unless (null? by-score) (execute gs (caar by-score)))
 		)
 	  )
 	)
@@ -671,12 +669,11 @@
 			  (the-environment)
 			  (lambda (run)
 				(ga-evaluate run 0 meta-new-game-with-seed game-won
-							 (lambda (genome) (game-step genome game))
-							 (lambda (steps steps-max)
-							   (fitness-eval game steps steps-max)))
+							 (cut game-step <> game)
+							 (cut fitness-eval game <...>))
 				)
-			  (lambda () (idle-call f))
-			  (lambda () (idle-call f))
+			  f
+			  f
 			  )
 			 )
 		   )

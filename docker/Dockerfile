@@ -5,6 +5,7 @@
 # sudo docker rm c-ar; sudo docker run --name c-ar -v <srcdir>:/src-in ar-base /src/build && sudo docker commit c-ar ar
 #
 # Run
+# sudo docker run -d --rm ar -p 12345:12345 bash -c 'sleep 1; xvfb-run sol --automate'
 # sudo docker run -d --rm ar bash -c 'sleep 1; xvfb-run sol --automate --host <host>:12345'
 
 FROM ubuntu:artful

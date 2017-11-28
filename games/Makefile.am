@@ -7,6 +7,7 @@ module_GUILE = \
 	aisleriot/nn.scm \
 	aisleriot/ga.scm \
 	aisleriot/permute.scm \
+	aisleriot/queue-mp.scm \
 	$(NULL)
 
 games_GUILE = \
