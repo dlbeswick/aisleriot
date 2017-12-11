@@ -1,4 +1,5 @@
 (define-module (aisleriot ga)
+  #:use-module (ice-9 threads)
   #:use-module (ice-9 futures)
   #:use-module (ice-9 local-eval)
   #:use-module (ice-9 popen)
@@ -17,6 +18,7 @@
   #:use-module (aisleriot interface)
   #:use-module (aisleriot permute)
   #:use-module (aisleriot queue-mp)
+  #:use-module (aisleriot math)
   #:re-export (serialize)
   #:export (<ga-automation-run>
 			<ga-genome>
@@ -78,10 +80,6 @@
 (define ga-mutex-complete (make-mutex))
 (define ga-cond-complete (make-condition-variable))
 (define queue-runs (make <queue-mp>))
-
-(define (avg list)
-  (exact->inexact (/ (apply + list) (length list)))
-  )
 
 ;; CSV
 (define (list->csv list)
@@ -196,21 +194,32 @@
 	  ;; Give the genome the last name of its best parent. If it was mutated, give it a new last name.
 	  (if (= 0 mfactor)
 		  (name-last-set! result (name-last-get genome0)))
-	  (format #t "Bred ~a X ~a to produce ~a with mutation factor ~a\n"
+	  (formatt "Bred ~a X ~a to produce ~a with mutation factor ~a\n"
 			  (name-get genome0) (name-get genome1) (name-get result) mfactor)
 	  result
 	  )
 	)
   )
 
-(define-method (ga-mutate (self <number>))
-  (let ((bv (make-bytevector 64)))
-	(bytevector-u64-native-set! bv 0 (random (ash 1 63)))
-	(let ((result (bytevector-ieee-double-native-ref bv 0)))
-	  (if (finite? result) result (ga-mutate self))
+;; Factor: the higher the factor, the more likely that a bit will be flipped depending on its significance.
+;; Chance decreases from lowest to highest bit with a power relationship.
+;; 1.0 - ((i - 64) / 65) ** factor
+(define-method (ga-mutate (double <number>) (factor <number>))
+  (let ((bv (make-bytevector 8)))
+	(bytevector-ieee-double-set! bv 0 double (endianness big))
+	(let* ((mutated-bits
+			(map (lambda (i bit)
+				   (let ((mutate-chance (- 1.0 (expt (/ (- 64 i) 65) factor))))
+					 (if (< (random 1.0) mutate-chance) (logxor bit 1) bit)))
+				 (iota 64)
+				 (bytevector->bitlist bv)))
+		   (result (bytevector-ieee-double-ref (bitlist->bytevector mutated-bits) 0 (endianness big)))
+		   )
+	  (if (finite? result) result (ga-mutate double factor))
 	  )
 	)
   )
+
 
 (define-method (ga-generate-next-population evaluated-genomes)
   (let* ((elites (ga-make-elites! evaluated-genomes ga-elite-preserve-count))
@@ -257,24 +266,25 @@
 
 ;;; Get a normalized value describing the degree to which network c differs from either of its parents p0 and p1.
 (define-method (mutation-factor (p0 <nn-network>) (p1 <nn-network>) (c <nn-network>))
-  (/ (fold (lambda (ep0 ep1 ec acc) (+ acc (mutation-factor ep0 ep1 ec)))
-		   0.0
-		   (layers-all-get p0)
-		   (layers-all-get p1)
-		   (layers-all-get c))
-	 (length (layers-all-get p0))))
+  (avg (map mutation-factor (layers-all-get p0) (layers-all-get p1) (layers-all-get c)))
+  )
 
 (define-method (ga-combine (n0 <number>) (n1 <number>))
-  (if (<= (random 1.0) ga-mutation-chance) (ga-mutate n0)
-	  (if (<= (random 1.0) ga-combine-chance) n1 n0)))
+  (let* ((combined (if (<= (random 1.0) ga-combine-chance) n1 n0))
+		 (chance (random 1.0))
+		 (factor (cond ((<= chance ga-mutation-chance-minor) ga-mutation-factor-minor)
+					   ((<= chance ga-mutation-chance-major) ga-mutation-factor-major)
+					   (else 0.0)))
+		 )
+	(if (= factor 0.0) combined (ga-mutate combined factor))
+	)
+  )
 
 (define-method (ga-combine (link0 <nn-link>) (link1 <nn-link>))
   (assert (equal? (class-of link0) (class-of link1)))
   (assert (equal? (slot-ref link0 '-node-source-id) (slot-ref link1 '-node-source-id)))
-  (assert (equal? (slot-ref link0 '-node-dest-id) (slot-ref link1 '-node-dest-id)))
   (make (class-of link0)
 	#:node-source-id (slot-ref link0 '-node-source-id)
-	#:node-dest-id (slot-ref link0 '-node-dest-id)
 	#:weight (ga-combine (slot-ref link0 '-weight) (slot-ref link1 '-weight)))
   )
 
@@ -287,14 +297,14 @@
 
 (define-method (ga-combine (node0 <nn-node-consumer>) (node1 <nn-node-consumer>))
   (let ((node (next-method)))
-	(slot-set! node '-links-in (reverse (fold (lambda (a b r) (cons (ga-combine a b) r)) '() (links-in-get node0) (links-in-get node1))))
+	(slot-set! node '-links-in (map ga-combine (links-in-get node0) (links-in-get node1)))
 	node))
 
 (define-method (ga-combine (layer0 <nn-layer>) (layer1 <nn-layer>))
   (assert (equal? (class-of layer0) (class-of layer1)))
   (assert (equal? (length (nodes-get layer0)) (length (nodes-get layer1))))
   (make (class-of layer0)
-	#:nodes (reverse (fold (lambda (a b r) (cons (ga-combine a b) r)) '() (nodes-get layer0) (nodes-get layer1))))
+	#:nodes (map ga-combine (nodes-get layer0) (nodes-get layer1)))
   )
 
 ;;; The better network should be passed to network0
@@ -302,7 +312,7 @@
   (assert (equal? (class-of network0) (class-of network1)))
   (make (class-of network0)
 	#:layer-input (ga-combine (layer-input-get network0) (layer-input-get network1))
-	#:layers-hidden (reverse (fold (lambda (a b r) (cons (ga-combine a b) r)) '() (layers-hidden-get network0) (layers-hidden-get network1)))
+	#:layers-hidden (map ga-combine (layers-hidden-get network0) (layers-hidden-get network1))
 	#:layer-output (ga-combine (layer-output-get network0) (layer-output-get network1))
 	)
   )
@@ -380,7 +390,7 @@
 (define (ga-evolve-population evaluated-genomes num-elites)
   (let* ((best (ga-by-best evaluated-genomes)))
 	(assert (>= (length best) 2))
-	(map (lambda (n) (apply ga-combine (ga-select-parents best 2)))
+	(par-map (lambda (n) (apply ga-combine (ga-select-parents best 2)))
 		 (iota (- (length best) num-elites))))
   )
 
@@ -483,7 +493,10 @@
 		(lambda (file)
 		  (for-each
 		   (lambda (port)
-			 (format port (pretty-string ga-config))
+			 ;; Write config that was used prepended with comment character
+			 (format port (string-join (map (cut string-append "#" <>)
+											(string-split (pretty-string ga-config) #\newline)) "\n"))
+			 
 			 (format port "generation,max-fitness-with-elites,max-fitness-no-elites,min-fitness-no-elites,average,duration-real,duration-agg,duration-run-min,duration-run-max,duration-run-avg\n")
 			 (format port "~a\n" (string-join (map list->csv (reverse stats-new)) "\n"))
 			 )
@@ -542,7 +555,6 @@
 		   (let ((deserialized (deserialize-from-string result local-env)))
 			 (unless (number? deserialized) (throw 'ga-error (format #t "Expected number, got ~a" deserialized)))
 			 (on-complete run deserialized))
-		   (complete! queue-runs run)
 		   )
 		 )
 	   )
@@ -556,13 +568,14 @@
 	   )
 	 )
 	)
+  (complete! queue-runs run)
   )
 
 (define (aisleriot-server nchildren local-env)
   (call-with-output-file "best.txt" identity)
 						 
   (let* ((sock-listen (socket PF_INET SOCK_STREAM 0))
-		 (port 12345))
+		 (port ga-port))
 	(bind sock-listen AF_INET INADDR_ANY port)
 	(formatt "Bound to port ~a\n" port)
 	(listen sock-listen 128)
@@ -600,7 +613,7 @@
 							(formatt "Waiting to get automation data from port ~a\n" port)
 							(connect sock (addrinfo:addr (car (getaddrinfo host (object->string port) AI_NUMERICSERV))))
 							)
-						  (lambda (key . args) (formatt "~a ~a\n" key args) (sleep 1) (retry-connect)))
+						  (lambda (key . args) (formatt "~a ~a\n" key args) (sleep 5) (retry-connect)))
 				   )
 			(catch
 			 'system-error
@@ -635,21 +648,24 @@
 
 (define ga-n-child-spawns (if ga-test 6 0))
 
-(define ga-population-size (if ga-test (+ ga-n-child-spawns ga-elite-preserve-count) 48))
+(define ga-population-size (if ga-test (+ ga-n-child-spawns ga-elite-preserve-count) 16))
 (define ga-training-set-size (if ga-test 1 10))
 
 (define ga-combine-chance 0.5)
-(define ga-mutation-chance 0.01)
+(define ga-mutation-chance-minor 0.3)
+(define ga-mutation-factor-minor 0.5)
+(define ga-mutation-chance-major 0.01)
+(define ga-mutation-factor-major 50.0)
 (define ga-max-moves 100)
 
-
-(define ga-value-max 3.402823466e+38)
 
 ;; The degree to which genomes with better scores are favoured for breeding (proportionate only)
 (define ga-factor-parent-best 0.5)
 
 ;;(define ga-select-parents ga-select-parents-fitness-proportionate)
 (define ga-select-parents ga-select-parents-tournament)
+
+(define ga-port (if ga-test 12346 12345))
 
 ;; Config variables that are useful for recording per-run
 (define ga-config
@@ -658,10 +674,12 @@
    (ga-population-size . ,ga-population-size)
    (ga-training-set-size . ,ga-training-set-size)
    (ga-combine-chance . ,ga-combine-chance)
-   (ga-mutation-chance . ,ga-mutation-chance)
+   (ga-mutation-chance-minor . ,ga-mutation-chance-minor)
+   (ga-mutation-factor-minor . ,ga-mutation-factor-minor)
+   (ga-mutation-chance-major . ,ga-mutation-chance-major)
+   (ga-mutation-factor-major . ,ga-mutation-factor-major)
    (ga-max-moves . ,ga-max-moves)
    (ga-elite-preserve-count . ,ga-elite-preserve-count)
-   (ga-value-max . ,ga-value-max)
    (ga-factor-parent-best . ,ga-factor-parent-best)
    (ga-select-parents . ,ga-select-parents)
    )

@@ -7,6 +7,7 @@
   #:use-module (aisleriot serialize)
   #:use-module (aisleriot permute)
   #:use-module (aisleriot formatt)
+  #:use-module (aisleriot math)
   #:re-export (serialize)
   #:export (<nn-layer>
 			<nn-link>
@@ -37,8 +38,6 @@
 			value-set!
 			)
   )
-
-(define nn-value-max 3.402823466e+38)
 
 (define-method (hash-djb (input <bytevector>) (mod <integer>))
   (let f ((hash 5381) (iinput (bytevector->u8-list input)))
@@ -98,37 +97,35 @@
 ;;; Connection between neural network nodes.
 (define-class <nn-link> (<serializable>)
   (-node-source-id #:init-keyword #:node-source-id)
-  (-node-dest-id #:init-keyword #:node-dest-id)
   (-weight #:init-value 1.0 #:init-keyword #:weight) ; <real>
+  (-cache-node-source #:init-value #nil)
   )
 
 (define-method (serialize (self <nn-link>))
-  (append (next-method) (serialize-slots self '-node-source-id '-node-dest-id '-weight)))
+  (append (next-method) (serialize-slots self '-node-source-id '-weight)))
 
 (define-method (inspect (self <nn-link>))
   (formattpps
-   "src: ~a dst: ~a weight: ~a"
+   "src: ~a weight: ~a"
    (slot-ref self '-node-source-id)
-   (slot-ref self '-node-dest-id)
    (slot-ref self '-weight))
   )
 
 (define-method (randomize! (self <nn-link>))
-  (let ((bv (make-bytevector 64)))
-	(bytevector-u64-native-set! bv 0 (random (ash 1 63)))
-	(let ((result (bytevector-ieee-double-native-ref bv 0)))
-	  (if (finite? result)
-		  (begin
-			(slot-set! self '-weight result)
-			self
-			)
-		  (randomize! self))
+  (slot-set! self '-weight (+ -1.0 (random 2.0))))
+
+(define-method (node-source-get (self <nn-link>) (network <nn-network>))
+  (or (slot-ref self '-cache-node-source)
+	  (let ((result (node-by-id network (slot-ref self '-node-source-id))))
+		(slot-set! self '-cache-node-source result)
+		result
+		)
 	  )
-	)
   )
 
 (define-method (contribution (self <nn-link>) (network <nn-network>))
-  (* (value-get (node-by-id network (slot-ref self '-node-source-id)) network) (slot-ref self '-weight)))
+  (* (value-get (node-source-get self network) network) (slot-ref self '-weight))
+  )
 
 ;;; Node in a neural network.
 (define-class <nn-node> (<serializable>)
@@ -227,7 +224,7 @@
 ;; layer1 should be a layer full of node-consumers
 (define-method (fully-connect! (layer0 <nn-layer>) (layer1 <nn-layer>))
   (permute-it (lambda (anodes)
-				(links-in-set! (cdr anodes) (cons (make <nn-link> #:node-source-id (id-get (car anodes)) #:node-dest-id (id-get (cdr anodes)))
+				(links-in-set! (cdr anodes) (cons (make <nn-link> #:node-source-id (id-get (car anodes)))
 												  (links-in-get (cdr anodes)))))
 			  (nodes-get layer0)
 			  (nodes-get layer1))

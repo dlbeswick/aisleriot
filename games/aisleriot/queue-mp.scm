@@ -1,4 +1,5 @@
 (define-module (aisleriot queue-mp)
+  #:use-module (aisleriot formatt)
   #:use-module (oop goops)
   #:use-module (srfi srfi-18)
   #:use-module (rnrs base)
@@ -54,6 +55,7 @@
 		(slot-set! queue '-processing (append (slot-ref queue '-processing) (list next)))
 		(slot-set! queue '-pending (cdr (slot-ref queue '-pending)))
 		(mutex-unlock! (slot-ref queue '-mutex))
+		(condition-variable-broadcast! (slot-ref queue '-cond-change))
 		next
 		)
 	  )
@@ -83,9 +85,12 @@
 (define-method (drain (queue <queue-mp>))
   (mutex-lock! (slot-ref queue '-mutex))
   (if (and (null? (slot-ref queue '-pending)) (null? (slot-ref queue '-processing)))
-	  (mutex-unlock! (slot-ref queue '-mutex))
+	  (begin
+		(mutex-unlock! (slot-ref queue '-mutex))
+		)
 	  (begin
 		(mutex-unlock! (slot-ref queue '-mutex) (slot-ref queue '-cond-change))
-		(drain queue))
+		(drain queue)
+		)
 	  )
   )
