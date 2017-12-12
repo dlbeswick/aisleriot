@@ -3,7 +3,9 @@
   #:use-module (srfi srfi-1)
   #:export (avg
 			bitlist->bytevector
+			bitlist-factor-diff
 			bytevector->bitlist
+			double->bitlist
 			)
   )
 
@@ -11,6 +13,7 @@
   (exact->inexact (/ (apply + list) (length list)))
   )
 
+;; A bitlist is a list where bits are encoded with the numbers '0' and '1'
 (define (bytevector->bitlist bv)
   (apply append
 		 (map (lambda (byte)
@@ -29,3 +32,14 @@
 	 ))
   )
 
+;; Note: big-endian
+(define (double->bitlist double)
+  (let ((bv (make-bytevector 8)))
+	(bytevector-ieee-double-set! bv 0 double (endianness big))
+	(bytevector->bitlist bv)
+	)
+  )
+	 
+(define (bitlist-factor-diff bl0 bl1)
+  (avg (map logxor bl0 bl1))
+  )

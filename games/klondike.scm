@@ -297,7 +297,7 @@
   )
 
 (define-method (success-probability (network <nn-network-klondike>) (move <move>) (game <game>))
-  (let ((nn-new (nn-network-for network move game)))
+  (let ((nn-new (nn-network-for! network move game)))
   ;;(format #t "Try move on network: ~a\n" (inspect move))
   ;;(format #t "\nNETWORK:\n~a\n\n" (inspect nn-new))
   ;; If the network ping-pongs a lot, then the cache can speed up the inevitable
@@ -370,22 +370,16 @@
 	)
   )
 
-(define-method (nn-network-for (network <nn-network-klondike>) (move <move>) (game <game>))
-  (let ((network-new-input (shallow-clone network))
-		(nodes-new (map (lambda (n) (make <nn-node-input-real> #:id (id-get n)))
-						(nodes-get (layer-input-get network)))))
-	(layer-input-set! network-new-input (make <nn-layer-input-klondike> #:nodes nodes-new))
-	;; Set gamestate nodes
-	(for-each value-set!
-			  (nodes-gamestate-get (layer-input-get network-new-input))
-			  (append-map nn-encode (sort (slots-all game) (lambda (slot0 slot1) (>= (id-get slot0) (id-get slot1)))))
-			  )
-;;;	(format #t "~a\n" (map value-get (nodes-get (layer-input-get network-new-input))))
-	network-new-input
-	)
+(define-method (nn-network-for! (network <nn-network-klondike>) (move <move>) (game <game>))
+  ;; Set gamestate nodes
+  (for-each value-set!
+			(nodes-gamestate-get (layer-input-get network))
+			(append-map nn-encode (sort (slots-all game) (lambda (slot0 slot1) (>= (id-get slot0) (id-get slot1)))))
+			)
+  network
   )
 
-(define-method (nn-network-for (network <nn-network-klondike>) (move <move-cards>) (game <game>))
+(define-method (nn-network-for! (network <nn-network-klondike>) (move <move-cards>) (game <game>))
   (let ((result (next-method)))
 	;; Set card move
 	(for-each value-set!
@@ -398,7 +392,7 @@
 	)
   )
 
-(define-method (nn-network-for (network <nn-network-klondike>) (move <move-deal>) (game <game>))
+(define-method (nn-network-for! (network <nn-network-klondike>) (move <move-deal>) (game <game>))
   (let ((result (next-method)))
 	(value-set! (node-deal-get (layer-input-get result)) (nn-encode move))
 ;;;  (format #t "D: ~a\n" (map value-get (nodes-get (layer-input-get result))))
@@ -627,26 +621,15 @@
 (define (game-step genome game)
   (let* ((gs (make <game-state> #:game game))
 		 (network (subject-get genome)))
-;;;		(format #t "Step ~a\n" steps)
-;;;		(display "\nALL CARDS\n")
-		
-;;;		(let f ((slots (slots-all game)))
-;;;		  (unless (null? slots)
-;;;			(format #t "Slot ~a: ~a\n" (car slots) (get-slot (car slots)))
-;;;			(f (cdr slots))))
-		
-;;;		(format #t "\nALL VALID MOVES\n")
 	(let ((moves '()))
 	  (moves-valid
 	   gs
 	   (lambda (m)
-;;;			 (format #t "~a\n" (inspect m))
 		 (set! moves (cons m moves))))
 
 	  ;; Try all moves on network
 	  (let* ((evals (map (lambda (m) (cons m (success-probability network m game))) (reverse moves)))
 			 (by-score (sort evals (lambda (ala alb) (> (cdr ala) (cdr alb))))))
-;;;				(for-each (lambda (al) (format #t "Success chance for move ~a: ~a\n" (inspect (car al)) (cdr al))) by-score)
 		(unless (null? by-score) (execute gs (caar by-score)))
 		)
 	  )
@@ -655,37 +638,31 @@
 
 (define (autoplay)
   (display "Autoplay begins\n")
+  (set! *random-state* (random-state-from-platform))
   (let ((game (make <game>
 				#:tableau (map (lambda (id) (make <slot-card> #:id id)) tableau)
 				#:foundation (map (lambda (id) (make <slot-card> #:id id)) foundation)
 				#:waste (make <slot-card> #:id waste)
 				)))
 	(if (ga-is-automation)
-		(let f ()
-		  (idle-call
-		   (lambda ()
-			 (set! *random-state* (random-state-from-platform))
-			 (ga-client-receive-automation-run
-			  (the-environment)
-			  (lambda (run)
-				(ga-evaluate run 0 meta-new-game-with-seed game-won
-							 (cut game-step <> game)
-							 (cut fitness-eval game <...>))
-				)
-			  f
-			  f
-			  )
-			 )
+		(ga-client-receive-automation-runs
+		 (the-environment)
+		 (lambda (run)
+		   (delayed-call (lambda ()
+						   (ga-evaluate run 0 meta-new-game-with-seed game-won
+										(cut game-step <> game)
+										(cut fitness-eval game <...>))))
 		   )
-		  )
+		 (lambda () #t)
+		 (lambda () #t)
+		 )
 		(ga-evolve (par-map
 					(lambda (n)
 					  (make <ga-genome> #:subject (randomize! (nn-network-klondike game))))
 					(iota ga-population-size))
 				   (iota ga-training-set-size)
 				   '()
-				   0)
-		)
+				   0))
 	)
   )
 

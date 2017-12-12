@@ -15,6 +15,7 @@
 (define-class <serializable> (<object>)
   )
 
+;; This restriction ensures that only those classes that have serialization explicitly defined will be serialized.
 (define-method (serialize (self <object>))
   (error "Objects must be derived from serializable to be serialized" self)
   )
@@ -56,17 +57,14 @@
   )
 
 (define-method (deserialize (list <list>) local-env)
-;;;  (formattpp "LIST CAR ~a CDR ~a\n" (car list) (cdr list)) 
   (if (equal? (string-ref (object->string (car list)) 0) #\<)
 	  (let ((class (local-eval (car list) local-env)))
-;;;		(formattpp "MAKE ~a\n" class) 
 		(deserialize-slots! (make class) (cdr list) local-env)
 		)
 	  (map (lambda (e) (deserialize e local-env)) list))
   )
 
 (define-method (deserialize-slot! (obj <object>) slot value local-env)
-;;;  (formattpp "SLOT ~a VAL ~a\n" slot value) 
   (slot-set! obj slot (deserialize value local-env))
   obj
   )
@@ -80,8 +78,7 @@
   (catch
    'read-error 
    (lambda ()
-	 (let ((serialized (eval-string str)))
-	   ;;	(pretty-print serialized)
+	 (let ((serialized (call-with-input-string str read)))
 	   (deserialize serialized local-env)
 	   )
 	 )
