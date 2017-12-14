@@ -12,6 +12,14 @@
 		   serialize-slots)
  )
 
+(define cache-class (make-hash-table 31))
+
+(define (class-get name local-env)
+  (let ((result (hashq-ref cache-class name)))
+	(if result result (hashq-set! cache-class name (local-eval name local-env)))
+	)
+  )
+
 (define-class <serializable> (<object>)
   )
 
@@ -58,7 +66,7 @@
 
 (define-method (deserialize (list <list>) local-env)
   (if (equal? (string-ref (object->string (car list)) 0) #\<)
-	  (let ((class (local-eval (car list) local-env)))
+	  (let ((class (class-get (car list) local-env)))
 		(deserialize-slots! (make class) (cdr list) local-env)
 		)
 	  (map (lambda (e) (deserialize e local-env)) list))

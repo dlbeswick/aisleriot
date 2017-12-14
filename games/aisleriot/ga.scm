@@ -1,4 +1,5 @@
 (define-module (aisleriot ga)
+  #:use-module (ice-9 atomic)
   #:use-module (ice-9 threads)
   #:use-module (ice-9 futures)
   #:use-module (ice-9 local-eval)
@@ -6,8 +7,8 @@
   #:use-module (ice-9 pretty-print)
   #:use-module (ice-9 textual-ports)
   #:use-module (srfi srfi-1)
-  #:use-module (srfi srfi-18)
-  #:use-module (srfi srfi-19)
+  #:use-module ((srfi srfi-18) #:prefix srfi:)
+  #:use-module ((srfi srfi-19) #:prefix srfi:)
   #:use-module (srfi srfi-26)
   #:use-module (oop goops)
   #:use-module (rnrs base)
@@ -18,6 +19,7 @@
   #:use-module (aisleriot permute)
   #:use-module (aisleriot queue-mp)
   #:use-module (aisleriot math)
+  #:use-module (statprof)
   #:re-export (serialize)
   #:export (<ga-automation-run>
 			<ga-genome>
@@ -115,17 +117,17 @@
   (append (next-method) (serialize-slots self '-seed '-genome)))
 
 (define-method (on-start (self <ga-automation-run>))
-  (slot-set! self '-time-start (current-time))
+  (slot-set! self '-time-start (srfi:current-time))
   )
 
 (define-method (on-complete (self <ga-automation-run>) data)
-  (slot-set! self '-time-end (current-time))
+  (slot-set! self '-time-end (srfi:current-time))
   ((slot-ref self '-callback-on-complete) self data)
   )
 
 (define-method (duration-elapsed (self <ga-automation-run>))
   (assert (slot-ref self '-time-end))
-  (time-difference (time-end-get self) (time-start-get self))
+  (srfi:time-difference (time-end-get self) (time-start-get self))
   )
 
 ;; Genomes
@@ -139,7 +141,7 @@
   (-is-elite #:init-value #f #:getter is-elite #:setter is-elite-set!)
   (-subject #:init-keyword #:subject #:getter subject-get)
   (-parents #:init-value '() #:init-keyword #:parents #:getter parents-get)
-  (-fitness-mutex #:init-thunk make-mutex)
+  (-fitness-mutex #:init-thunk srfi:make-mutex)
   (-cache-mutation-factor #:init-value #nil)
   )
 
@@ -166,22 +168,22 @@
   (string-append (name-first-get self) " " (name-last-get self)))
 
 (define-method (fitness-set! (self <ga-genome>) (fitness <number>))
-  (mutex-lock! (slot-ref self '-fitness-mutex))
+  (srfi:mutex-lock! (slot-ref self '-fitness-mutex))
   (slot-set! self '-fitness fitness)
-  (mutex-unlock! (slot-ref self '-fitness-mutex))
+  (srfi:mutex-unlock! (slot-ref self '-fitness-mutex))
   )
 
 (define-method (fitness-get (self <ga-genome>))
-  (mutex-lock! (slot-ref self '-fitness-mutex))
+  (srfi:mutex-lock! (slot-ref self '-fitness-mutex))
   (let ((result (slot-ref self '-fitness)))
-	(mutex-unlock! (slot-ref self '-fitness-mutex))
+	(srfi:mutex-unlock! (slot-ref self '-fitness-mutex))
 	result)
   )
 
 (define-method (fitness-add! (self <ga-genome>) (fitness <number>))
-  (mutex-lock! (slot-ref self '-fitness-mutex))
+  (srfi:mutex-lock! (slot-ref self '-fitness-mutex))
   (slot-set! self '-fitness (+ (slot-ref self '-fitness) fitness))
-  (mutex-unlock! (slot-ref self '-fitness-mutex))
+  (srfi:mutex-unlock! (slot-ref self '-fitness-mutex))
   )
 
 (define-method (mutation-factor (genome <ga-genome>))
@@ -391,12 +393,13 @@
 			(apply max no-elites)
 			(apply min no-elites)
 			(avg (map fitness-get best))
-			(time-second (time-difference (car (sort (map time-end-get runs) time>?))
-										  (car (sort (map time-start-get runs) time<=?))))
-			(time-second (reduce add-duration (duration-elapsed (car runs)) (map duration-elapsed runs)))
-			(apply min (map time-second (map duration-elapsed runs)))
-			(apply max (map time-second (map duration-elapsed runs)))
-			(avg (map time-second (map duration-elapsed runs)))
+			(srfi:time-second (srfi:time-difference
+							   (car (sort (map time-end-get runs) srfi:time>?))
+							   (car (sort (map time-start-get runs) srfi:time<=?))))
+			(srfi:time-second (reduce srfi:add-duration (duration-elapsed (car runs)) (map duration-elapsed runs)))
+			(apply min (map srfi:time-second (map duration-elapsed runs)))
+			(apply max (map srfi:time-second (map duration-elapsed runs)))
+			(avg (map srfi:time-second (map duration-elapsed runs)))
 			)
 	  )
 	)
@@ -431,14 +434,18 @@
 ;; Generation evaluation
 (define (ga-on-evaluated run steps fitness-func)
   (fitness-set! (genome-get run) (fitness-func steps ga-max-moves))
-  (condition-variable-signal! ga-cond-complete)
+  (broadcast-condition-variable ga-cond-complete)
+  (if ga-test (begin (statprof-stop) (statprof-display)))
   )
 
 ;; Run a single genome so that fitness can be evaluated
 (define-method (ga-evaluate (run <ga-automation-run>) steps generation-start-func game-won-func
 							game-step-func fitness-func)
   (if (= steps 0)
-	  (generation-start-func (seed-get run)))
+	  (begin
+		(if ga-test (statprof-start))
+		(generation-start-func (seed-get run))
+		))
   (let ((genome (genome-get run)))
 	(assert (not (is-elite genome))) ; elite fitness should already be known
 	(cond
@@ -461,7 +468,7 @@
 (define spawned #f)
 
 (define (guarded-thread thunk)
-  (make-thread
+  (srfi:make-thread
    (lambda ()
 	 (catch #t
 			thunk
@@ -487,7 +494,7 @@
 									   (formatt "Completed ~a with result ~a (~a remaining)\n"
 												(inspect run)
 												result
-												(apply + (lengths queue-runs))
+												(1- (apply + (lengths queue-runs)))
 												)
 									   (fitness-add! (genome-get run) result)
 									   ))
@@ -563,26 +570,43 @@
 	(catch
 	 #t
 	 (lambda ()
-	   (let ((to-send (format #f "~s" (serialize run))))
+	   (formatt "~a: serializing\n" (inspect run))
+	   (let* ((to-send (format #f "~s" (serialize run))))
+		 (formatt "~a: sending to client\n" (inspect run))
 		 ;; Send data length then data instead of triggering data end with a socket write shutdown, to avoid TIME_WAIT
 		 ;; on server.
 		 (format sock "~a\n~a" (string-length to-send) to-send)
 		 (force-output sock)
-		 
-		 (let ((result (get-string-n sock (string->number (get-line sock)))))
-		   (let ((deserialized (deserialize-from-string result local-env)))
-			 (unless (number? deserialized) (throw 'ga-error (format #t "Expected number, got ~a" deserialized)))
-			 (on-complete run deserialized))
+		 )
+	   (formatt "~a: waiting for client to complete\n" (inspect run))
+
+	   (let keepalive ()
+		 (unless (equal? (car (select (list sock) '() '() 10)) (list sock))
+				 (throw 'ga-error "no client data received before timeout"))
+
+		 (let ((in-size (get-line sock)))
+		   (unless (eof-object? in-size)
+				   (let ((result (get-string-n sock (string->number in-size))))
+					 (let ((deserialized (deserialize-from-string result local-env)))
+					   (cond ((number? deserialized)
+							  (on-complete run deserialized)
+							  (complete! queue-runs run)
+							  (server-worker-connection sock local-env))
+							 ;; Receipt of #t is a keepalive signal
+							 ((boolean? deserialized) (formatt "~a: keepalive\n" (inspect run)) (keepalive)) 
+							 (else (throw 'ga-error "Expected number or bool, got" deserialized)))
+					   )
+					 )
+				   )
 		   )
 		 )
-	   (complete! queue-runs run)
-	   (server-worker-connection sock local-env)
 	   )
 	 (lambda (key . args)
 	   (if (memq key '(system-error ga-error))
 		   (begin
-			 (formatt "Error: ~a ~a (retrying run)\n" key args)
+			 (formatt "~a: Error, retrying run ~a ~a\n" (inspect run) key args)
 			 (requeue! queue-runs run)
+			 (close sock)
 			 )
 		   (apply throw key args))
 	   )
@@ -599,14 +623,14 @@
 	(formatt "Bound to port ~a\n" port)
 	(listen sock-listen 128)
 
-	(for-each (lambda (i) (thread-start! (guarded-thread (lambda () (child-spawn port i))))) (iota nchildren))
+	(for-each (lambda (i) (srfi:thread-start! (guarded-thread (lambda () (child-spawn port i))))) (iota nchildren))
 
-	(thread-start!
+	(srfi:thread-start!
 	 (guarded-thread
 	  (lambda () 
 		(let f ()
 		  (let ((sock-worker (car (accept sock-listen))))
-			(thread-start! (guarded-thread (lambda () (server-worker-connection sock-worker local-env))))
+			(srfi:thread-start! (guarded-thread (lambda () (server-worker-connection sock-worker local-env))))
 			)
 		  (f)
 		  )
@@ -617,7 +641,7 @@
 
 ;; Starts a thread that processes automation runs forever.
 (define (ga-client-receive-automation-runs local-env run-func complete-func error-func)
-  (thread-start!
+  (srfi:thread-start!
    (guarded-thread
 	(lambda ()
 	  (let ((host-param (member "--host" (program-arguments))))
@@ -639,13 +663,45 @@
 				 'system-error
 				 (lambda ()
 				   (let receive-next-run ()
+					 (format #t "Client waiting to receive\n")
+					 (select (list sock) '() '())
+					 (format #t "Client receiving\n")
 					 (let* ((input (get-string-n sock (string->number (get-line sock))))
+							(_ (format #t "Client deserializing\n"))
 							(automation-run (deserialize-from-string input local-env)))
 					   (fitness-set! (genome-get automation-run) 0.0)
 					   (format #t "~a: Running\n" (inspect automation-run))
-					   (run-func automation-run)
-					   (mutex-lock! ga-mutex-complete)
-					   (mutex-unlock! ga-mutex-complete ga-cond-complete)
+
+					   (letrec ((keepalive
+								 (guarded-thread
+								  (lambda ()
+									(let f ()
+									  (lock-mutex ga-mutex-complete)
+									  (unless (wait-condition-variable ga-cond-complete ga-mutex-complete
+																	   (+ (current-time) 5))
+											  (unlock-mutex ga-mutex-complete)
+											  (let ((to-send (format #f "~s" #t)))
+												(format sock "~a\n~a" (string-length to-send) to-send)
+												)
+											  (unless (srfi:thread-specific keepalive)
+													  (f)
+													  )
+											  )
+									  )
+									(unlock-mutex ga-mutex-complete)
+									)
+								  ))
+								)
+						 
+						 (srfi:thread-start! keepalive)
+						 (run-func automation-run)
+						 (lock-mutex ga-mutex-complete)
+						 (wait-condition-variable ga-cond-complete ga-mutex-complete)
+						 (srfi:thread-specific-set! keepalive #t)
+						 (unlock-mutex ga-mutex-complete)
+						 (signal-condition-variable ga-cond-complete)
+						 (srfi:thread-join! keepalive)
+						 )
 					   
 					   (let ((to-send (format #f "~s" (fitness-get (genome-get automation-run)))))
 						 (format sock "~a\n~a" (string-length to-send) to-send)
@@ -660,7 +716,7 @@
 				   (formatt "Error: ~a ~a\n" key args)
 				   (close sock)
 				   (error-func)
-				   (ga-client-receive-automation-run local-env run-func complete-func error-func)))
+				   (ga-client-receive-automation-runs local-env run-func complete-func error-func)))
 				)
 			  )
 			))
@@ -674,9 +730,9 @@
 
 (define ga-elite-preserve-count 2)
 
-(define ga-n-child-spawns (if ga-test 3 0))
+(define ga-n-child-spawns (if ga-test 0 0))
 
-(define ga-population-size (if ga-test 10 32))
+(define ga-population-size (if ga-test 10 64))
 (define ga-training-set-size (if ga-test 1 10))
 
 (define ga-combine-chance 0.5)
