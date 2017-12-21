@@ -3,6 +3,7 @@
   #:use-module (ice-9 threads)
   #:use-module (ice-9 futures)
   #:use-module (ice-9 local-eval)
+  #:use-module (ice-9 match) ;; TEMP
   #:use-module (ice-9 popen)
   #:use-module (ice-9 pretty-print)
   #:use-module (ice-9 textual-ports)
@@ -14,21 +15,24 @@
   #:use-module (rnrs base)
   #:use-module (rnrs bytevectors)
   #:use-module (aisleriot formatt)
-  #:use-module (aisleriot serialize)
+  #:use-module (aisleriot math)
   #:use-module (aisleriot nn)
   #:use-module (aisleriot permute)
   #:use-module (aisleriot queue-mp)
-  #:use-module (aisleriot math)
+  #:use-module (aisleriot serialize)
+  #:use-module (aisleriot time)
   #:use-module (statprof)
   #:re-export (serialize)
   #:export (<ga-automation-run>
 			<ga-genome>
+			<ga-state>
 
 			genome-get
 			name-get
 			seed-get
 			subject-get
 
+			ga-load
 			ga-population-size
 			ga-training-set-size
 			ga-evolve
@@ -78,6 +82,19 @@
 ;;; caching/parallel.
 ;;; 
 
+(define (par-mapper mapper cons)
+  (lambda (proc . lists)
+    (let loop ((lists lists))
+      (match lists
+        (((heads tails ...) ...)
+         (let* ((tail (future (loop tails)))
+				(head (apply proc heads)))
+           (cons head (touch tail))))
+        (_
+         '())))))
+
+(define par-map (par-mapper map cons))
+
 (define ga-mutex-complete (make-mutex))
 (define ga-cond-complete (make-condition-variable))
 (define queue-runs (make <queue-mp>))
@@ -100,6 +117,25 @@
 			   (generate-name (1- nclusters))))))
 
 ;; Distributed execution
+(define-class <ga-state> (<serializable>)
+  (-n-generation #:init-keyword #:n-generation #:init-value 0 #:getter n-generation-get)
+  (-genomes #:init-keyword #:genomes #:getter genomes-get)
+  (-seeds #:init-keyword #:seeds #:getter seeds-get)
+  (-stats #:init-keyword #:stats #:init-value '() #:getter stats-get)
+  )
+
+(define-method (first? (state <ga-state>))
+  (= (n-generation-get state) 0)
+  )
+
+(define-method (next (state <ga-state>) genomes-new stats-new)
+  (make <ga-state>
+	#:genomes genomes-new #:seeds (seeds-get state) #:stats stats-new #:n-generation (1+ (n-generation-get state)))
+  )
+
+(define-method (serialize-slots-get (self <ga-state>))
+  (append (next-method) '(-n-generation -genomes -seeds -stats))
+  )
 
 (define-class <ga-automation-run> (<serializable>)
   (-seed #:init-keyword #:seed #:getter seed-get)
@@ -107,14 +143,28 @@
   (-callback-on-complete #:init-keyword #:on-complete)
   (-time-start #:getter time-start-get)
   (-time-end #:getter time-end-get)
+  (-serialized)
+  )
+
+(define (prepare-automation-run run)
+  (slot-set! run '-serialized (format #f "~s" (serialize run)))
+  run
+  )
+
+(define (serialized-get! run)
+  (let ((result (slot-ref run '-serialized)))
+	(slot-set! run '-serialized 'cleared)
+	result
+	)
   )
 
 (define-method (inspect (self <ga-automation-run>))
   (list (class-name (class-of self)) (name-get (genome-get self)) (seed-get self))
   )
 
-(define-method (serialize (self <ga-automation-run>))
-  (append (next-method) (serialize-slots self '-seed '-genome)))
+(define-method (serialize-slots-get (self <ga-automation-run>))
+  (append (next-method) '(-seed -genome))
+  )
 
 (define-method (on-start (self <ga-automation-run>))
   (slot-set! self '-time-start (srfi:current-time))
@@ -123,6 +173,7 @@
 (define-method (on-complete (self <ga-automation-run>) data)
   (slot-set! self '-time-end (srfi:current-time))
   ((slot-ref self '-callback-on-complete) self data)
+  (slot-set! self '-callback-on-complete #nil)
   )
 
 (define-method (duration-elapsed (self <ga-automation-run>))
@@ -138,7 +189,7 @@
   (-name-last #:init-form (generate-name (+ 1 (random 4)))
 			  #:init-keyword #:name-last #:getter name-last-get #:setter name-last-set!)
   (-fitness #:init-value 0.0)
-  (-is-elite #:init-value #f #:getter is-elite #:setter is-elite-set!)
+  (-is-elite #:init-value #f #:getter elite? #:setter is-elite-set!)
   (-subject #:init-keyword #:subject #:getter subject-get)
   (-parents #:init-value '() #:init-keyword #:parents #:getter parents-get)
   (-fitness-mutex #:init-thunk srfi:make-mutex)
@@ -153,15 +204,8 @@
    )
   )
 
-(define-method (serialize (self <ga-genome>))
-  (append (next-method)
-		  (serialize-slots self
-						   '-name-first
-						   '-name-last
-						   '-fitness
-						   '-is-elite
-						   '-subject
-						   ))
+(define-method (serialize-slots-get (self <ga-genome>))
+  (append (next-method) '(-name-first -name-last -fitness -is-elite -subject))
   )
   
 (define-method (name-get (self <ga-genome>))
@@ -187,26 +231,29 @@
   )
 
 (define-method (mutation-factor (genome <ga-genome>))
-  (assert (not (null? (parents-get genome))))
-  (let ((result (slot-ref genome '-cache-mutation-factor)))
-	(if result result
-		(let ((result (mutation-factor (car (parents-get genome))
-									   (cadr (parents-get genome))
-									   genome)))
-		  (slot-set! genome '-cache-mutation-factor result)
-		  result
-		  ))
-	)
+  0.0
+  ;; (assert (not (null? (parents-get genome))))
+  ;; (let ((result (slot-ref genome '-cache-mutation-factor)))
+  ;; 	(if result result
+  ;; 		(let ((result (mutation-factor (car (parents-get genome))
+  ;; 									   (cadr (parents-get genome))
+  ;; 									   genome)))
+  ;; 		  (slot-set! genome '-cache-mutation-factor result)
+  ;; 		  result
+  ;; 		  ))
+  ;; 	)
   )
 
 (define-method (cleanup! (genome <ga-genome>))
-  (slot-set! genome '-parents 'cleaned))
+  (slot-set! genome '-parents 'cleaned)
+;  (unless (elite? genome) (slot-set! genome '-subject 'cleaned))
+  )
 
 ;; GA methods
 
 (define-method (ga-combine (genome0 <ga-genome>) (genome1 <ga-genome>))
-  (let* ((result (make <ga-genome> #:subject (ga-combine (subject-get genome0) (subject-get genome1))
-					   #:parents (list genome0 genome1))))
+  (let ((result (make <ga-genome> #:subject (ga-combine (subject-get genome0) (subject-get genome1))
+)));					  #:parents (list genome0 genome1))))
 	;; Give the genome the last name of its best parent. If it was mutated, give it a new last name.
 	(if (= 0 (mutation-factor result))
 		(name-last-set! result (name-last-get genome0)))
@@ -219,7 +266,7 @@
 ;; 1.0 - ((i - 64) / 65) ** factor
 (define-method (ga-mutate (double <number>) (factor <number>))
   (let ((bv (make-bytevector 8)))
-	(bytevector-ieee-double-set! bv 0 double (endianness big))
+	(bytevector-ieee-double-set! bv 0 (exact->inexact double) (endianness big))
 	(let* ((mutated-bits
 			(map (lambda (i bit)
 				   (let ((mutate-chance (- 1.0 (expt (/ (- 64 i) 65) factor))))
@@ -340,8 +387,9 @@
 (define (ga-by-best genomes)
   (sort genomes (lambda (a b) (> (fitness-get a) (fitness-get b)))))
 
+;; GENOMES must be sorted by fitness
 (define (ga-select-parents-fitness-proportionate genomes ndesired)
-  (let ((max-best (apply max (map fitness-get (ga-by-best genomes)))))
+  (let ((max-best (apply max (map fitness-get genomes))))
 	(let f ((out '()) (ln genomes))
 	  (cond ((= (length out) ndesired) (reverse out))
 			((null? ln) (list-head genomes ndesired))
@@ -353,6 +401,7 @@
 	)
   )
 
+;; GENOMES must be sorted by fitness
 (define (ga-select-parents-tournament genomes ndesired)
   (assert (<= ndesired (length genomes)))
 
@@ -386,20 +435,21 @@
 	(formatt "Final 25 fitnesses: ~a\n"
 			 (list-head (map (lambda (nn) (cons (name-get nn) (fitness-get nn))) best) (min (length best) 25))
 			 )
-	(let ((no-elites (map fitness-get (filter (negate is-elite) best))))
-;;; "generation,max-fitness-with-elites,max-fitness-no-elites,min-fitness-no-elites,average,duration-real,duration-agg,duration-run-min,duration-run-max,duration-run-avg\n"
+	(let ((no-elites (map fitness-get (filter (negate elite?) best))))
+;;; "generation,max-fitness-with-elites,max-fitness-no-elites,min-fitness-no-elites,average,duration-real,duration-agg,duration-run-min,duration-run-max,duration-run-avg,heap-size\n"
 	  (list generation
 			(apply max (map fitness-get best))
 			(apply max no-elites)
 			(apply min no-elites)
 			(avg (map fitness-get best))
-			(srfi:time-second (srfi:time-difference
-							   (car (sort (map time-end-get runs) srfi:time>?))
-							   (car (sort (map time-start-get runs) srfi:time<=?))))
-			(srfi:time-second (reduce srfi:add-duration (duration-elapsed (car runs)) (map duration-elapsed runs)))
-			(apply min (map srfi:time-second (map duration-elapsed runs)))
-			(apply max (map srfi:time-second (map duration-elapsed runs)))
-			(avg (map srfi:time-second (map duration-elapsed runs)))
+			(srfi-time->seconds (srfi:time-difference
+								 (car (sort (map time-end-get runs) srfi:time>?))
+								 (car (sort (map time-start-get runs) srfi:time<=?))))
+			(srfi-time->seconds (reduce srfi:add-duration (duration-elapsed (car runs)) (map duration-elapsed runs)))
+			(apply min (map srfi-time->seconds (map duration-elapsed runs)))
+			(apply max (map srfi-time->seconds (map duration-elapsed runs)))
+			(avg (map srfi-time->seconds (map duration-elapsed runs)))
+			(/ (assoc-ref (gc-stats) 'heap-size) 1048576.0)
 			)
 	  )
 	)
@@ -412,8 +462,9 @@
 (define (ga-evolve-population evaluated-genomes num-elites)
   (let ((best (ga-by-best evaluated-genomes)))
 	(assert (>= (length best) 2))
-	(par-map (lambda (n) (apply ga-combine (ga-select-parents best 2)))
-			 (iota (- (length best) num-elites))))
+	(n-par-map 9
+			   (lambda (_) (apply ga-combine (ga-select-parents best 2)))
+			   (iota (- (length best) num-elites))))
   )
 
 ;; Set 'elite' flag on those genomes that should be considered elite according to their current fitnesses.
@@ -435,7 +486,7 @@
 (define (ga-on-evaluated run steps fitness-func)
   (fitness-set! (genome-get run) (fitness-func steps ga-max-moves))
   (broadcast-condition-variable ga-cond-complete)
-  (if ga-test (begin (statprof-stop) (statprof-display)))
+  (if ga-profile (begin (statprof-stop) (statprof-display)))
   )
 
 ;; Run a single genome so that fitness can be evaluated
@@ -443,11 +494,11 @@
 							game-step-func fitness-func)
   (if (= steps 0)
 	  (begin
-		(if ga-test (statprof-start))
+		(if ga-profile (statprof-start))
 		(generation-start-func (seed-get run))
 		))
   (let ((genome (genome-get run)))
-	(assert (not (is-elite genome))) ; elite fitness should already be known
+	(assert (not (elite? genome))) ; elite fitness should already be known
 	(cond
 	 ((game-won-func)
 	  (format #t "~a: Game won\n" (inspect run))
@@ -467,67 +518,121 @@
 
 (define spawned #f)
 
+(define (thread-pre-unwind-handler key . args)
+  (formatt "Thread terminated, error: ~a ~a\n~a\n"
+		   key
+		   args
+		   (call-with-output-string (cut display-backtrace (make-stack #t 5) <>)))
+  )
+
+;(set! %thread-pre-unwind-handler thread-pre-unwind-handler)
+
 (define (guarded-thread thunk)
   (srfi:make-thread
    (lambda ()
 	 (catch #t
 			thunk
 			identity
-			(lambda (key . args)
-			  (formatt "Thread terminated, error: ~a ~a\n~a\n"
-					   key
-					   args
-					   (call-with-output-string (cut display-backtrace (make-stack #t) <>)))
-			  ))
+			thread-pre-unwind-handler)
 	 ))
   )
 
-(define (ga-evolve genomes seeds stats generation)
-  (unless spawned (set! spawned #t)
-		  (aisleriot-server ga-n-child-spawns (the-environment)))
-
-  (let ((runs (map (lambda (t)
-					 (make <ga-automation-run>
-					   #:genome (car t)
-					   #:seed (cdr t)
-					   #:on-complete (lambda (run result)
-									   (formatt "Completed ~a with result ~a (~a remaining)\n"
-												(inspect run)
-												result
-												(1- (apply + (lengths queue-runs)))
-												)
-									   (fitness-add! (genome-get run) result)
-									   ))
-					 )
-				   (permute (filter (negate is-elite) genomes) seeds))))
-
-	(formatt "Waiting to process ~a runs\n" (length runs))
-	(for-each (lambda (r) (queue! queue-runs r))  runs)
-	(drain queue-runs)
-  
-	(let ((stats-new
-		   (cons (ga-calc-generation-stats generation genomes runs stats) stats))
-		  (next-generation
-		   (sort (ga-generate-next-population genomes)
-				 (lambda (a b) (string<? (name-last-get a) (name-last-get b)))))
-		  )
-	  (call-with-output-file
-		  "stats.txt"
-		(lambda (file)
-		  (for-each
-		   (lambda (port)
-			 ;; Write config that was used prepended with comment character
-			 (format port (string-join (map (cut string-append "#" <>)
-											(string-split (pretty-string ga-config) #\newline)) "\n"))
-			 (format port "\n")
-			 (format port "generation,max-fitness-with-elites,max-fitness-no-elites,min-fitness-no-elites,average,duration-real,duration-agg,duration-run-min,duration-run-max,duration-run-avg\n")
-			 (format port "~a\n" (string-join (map list->csv (reverse stats-new)) "\n"))
-			 )
-		   (list #t file)
+(define (on-complete-run run result)
+  (formatt "Completed ~a with result ~a (~a remaining)\n"
+		   (inspect run)
+		   result
+		   (1- (apply + (lengths queue-runs)))
 		   )
-		  ))
-	  (for-each cleanup! genomes)
-	  (ga-evolve next-generation seeds stats-new (1+ generation))
+  (fitness-add! (genome-get run) result)
+  )
+
+;; Begin repeatedly evaluting and evolving the given state
+;; LAMBDA-GA-STATE-INITIAL should return a ga-state object to be used if no state is serialized.
+(define (ga-evolve lambda-ga-state-initial)
+  (let loop ((state (or (and (not ga-test) (ga-load (the-environment)))
+						(lambda-ga-state-initial)))
+			 (first #t)
+			 )
+	(unless spawned (set! spawned #t)
+			(aisleriot-server ga-n-child-spawns (the-environment)))
+
+	(let* ((best
+			(if (first? state) '() (ga-by-best (genomes-get state))))
+		   (non-elite
+			(filter (negate elite?) (genomes-get state)))
+		   (runs
+			(apply
+			 append
+			 (n-par-map 9
+						(lambda (genome)
+						  (let ((genome-new (if (null? best) genome (apply ga-combine (ga-select-parents best 2)))))
+							(unless (null? (parents-get genome-new))
+									(formatt "Bred ~a to produce ~a with mutation factor ~a\n"
+											 (string-join (map name-get (parents-get genome-new)) " X ")
+											 (name-get genome-new)
+											 (mutation-factor genome-new)))
+							
+							(map
+							 (lambda (seed)
+							   (queue! queue-runs
+									   (prepare-automation-run
+										(make <ga-automation-run>
+										  #:genome genome-new
+										  #:seed seed
+										  #:on-complete on-complete-run)
+										))
+							   )
+							 (seeds-get state))
+							)
+						  )
+						non-elite)
+			 )
+			))
+
+;	  (unless (first? state) (for-each cleanup! (genomes-get state)))
+	  (formatt "Waiting to finish processing ~a runs\n" (apply + (lengths queue-runs)))
+	  (let ((thread-write-state
+			 (begin-thread
+			  (unless (or ga-test first)
+					  (formatt "Serializing state\n")
+					  (call-with-output-file "state.scm.out" (cut serialize-stream <> state))
+					  (rename-file "state.scm.out" "state.scm")
+					  (formatt "Serializing state done\n")
+					  )
+			  )))
+		(drain queue-runs)
+		(formatt "Completed ~a runs\n" (length runs))
+		
+		(let* ((genomes-new (append (filter elite? (genomes-get state)) (delete-duplicates (map genome-get runs) eq?)))
+			   (stats-new
+				(append (stats-get state)
+						(list (ga-calc-generation-stats (n-generation-get state) genomes-new runs (stats-get state)))))
+			   )
+		  
+		  (begin-thread
+		   (call-with-output-file
+			   "stats.txt"
+			 (lambda (file)
+			   (for-each
+				(lambda (port)
+				  ;; Write config that was used prepended with comment character
+				  (format port (string-join (map (cut string-append "#" <>)
+												 (string-split (pretty-string ga-config) #\newline)) "\n"))
+				  (format port "\n")
+				  (format port "generation,max-fitness-with-elites,max-fitness-no-elites,min-fitness-no-elites,average,duration-real,duration-agg,duration-run-min,duration-run-max,duration-run-avg,heap-size\n")
+				  (format port "~a\n" (string-join (map list->csv stats-new) "\n"))
+				  )
+				(list #t file)
+				)
+			   ))
+		   )
+		  
+		  (ga-make-elites! genomes-new ga-elite-preserve-count)
+		  (formattpp "~a\n" (gc-stats))
+		  (join-thread thread-write-state)
+		  (loop (next state genomes-new stats-new) #f)
+		  )
+		)
 	  )
 	)
   )
@@ -570,15 +675,15 @@
 	(catch
 	 #t
 	 (lambda ()
-	   (formatt "~a: serializing\n" (inspect run))
-	   (let* ((to-send (format #f "~s" (serialize run))))
-		 (formatt "~a: sending to client\n" (inspect run))
+;	   (formatt "~a: serializing\n" (inspect run))
+	   (let* ((to-send (serialized-get! run)))
+;		 (formatt "~a: sending to client\n" (inspect run))
 		 ;; Send data length then data instead of triggering data end with a socket write shutdown, to avoid TIME_WAIT
 		 ;; on server.
 		 (format sock "~a\n~a" (string-length to-send) to-send)
 		 (force-output sock)
 		 )
-	   (formatt "~a: waiting for client to complete\n" (inspect run))
+;	   (formatt "~a: waiting for client to complete\n" (inspect run))
 
 	   (let keepalive ()
 		 (unless (equal? (car (select (list sock) '() '() 10)) (list sock))
@@ -593,7 +698,7 @@
 							  (complete! queue-runs run)
 							  (server-worker-connection sock local-env))
 							 ;; Receipt of #t is a keepalive signal
-							 ((boolean? deserialized) (formatt "~a: keepalive\n" (inspect run)) (keepalive)) 
+							 ((boolean? deserialized) (formatt "~a: keepalive\n" (inspect run)) (keepalive))
 							 (else (throw 'ga-error "Expected number or bool, got" deserialized)))
 					   )
 					 )
@@ -602,26 +707,32 @@
 		 )
 	   )
 	 (lambda (key . args)
-	   (if (memq key '(system-error ga-error))
-		   (begin
-			 (formatt "~a: Error, retrying run ~a ~a\n" (inspect run) key args)
-			 (requeue! queue-runs run)
-			 (close sock)
-			 )
-		   (apply throw key args))
+	   (formatt "~a: Error, retrying run ~a ~a\n" (inspect run) key args)
+	   (requeue! queue-runs (prepare-automation-run run))
+	   (close sock)
 	   )
 	 )
 	)
   )
 
 (define (aisleriot-server nchildren local-env)
-  (call-with-output-file "best.txt" identity)
-						 
   (let* ((sock-listen (socket PF_INET SOCK_STREAM 0))
 		 (port ga-port))
-	(bind sock-listen AF_INET INADDR_ANY port)
+	
+	(let f ((i 0))
+	  (catch 'system-error
+			 (cut bind sock-listen AF_INET INADDR_ANY port)
+			 (lambda (tag . args)
+			   (formatt "Retrying server start: ~a ~a\n" tag args)
+			   (if (= i 60) (apply throw tag args))
+			   (sleep 2)
+			   (f (1+ i))))
+	  )
+	
 	(formatt "Bound to port ~a\n" port)
 	(listen sock-listen 128)
+
+	(call-with-output-file "best.txt" identity)
 
 	(for-each (lambda (i) (srfi:thread-start! (guarded-thread (lambda () (child-spawn port i))))) (iota nchildren))
 
@@ -652,7 +763,7 @@
 				   (port (string->number (cadr split-param))))
 			  (let ((sock (socket PF_INET SOCK_STREAM 0)))
 				(let retry-connect ()
-				  (catch 'system-error
+				  (catch #t
 						 (lambda ()
 						   (formatt "Waiting to get automation data from port ~a\n" port)
 						   (connect sock (addrinfo:addr (car (getaddrinfo host (object->string port) AI_NUMERICSERV))))
@@ -660,7 +771,7 @@
 						 (lambda (key . args) (formatt "~a ~a\n" key args) (sleep 5) (retry-connect)))
 				  )
 				(catch
-				 'system-error
+				 #t
 				 (lambda ()
 				   (let receive-next-run ()
 					 (format #t "Client waiting to receive\n")
@@ -725,29 +836,39 @@
    )
   )
 
+(define (ga-load local-env)
+  (catch 'system-error
+		 (lambda ()
+		   (formatt "Restoring state.scm\n")
+		   (call-with-input-file "state.scm" (cut deserialize-stream-from-port <> local-env)))
+		 (lambda (tag . args) (formatt "ga-load: ~a ~a\n" tag args) #nil)
+		 )
+  )
+
 ;;; GA setup
-(define ga-test #f)
+(define ga-test #t)
+(define ga-profile #f)
 
 (define ga-elite-preserve-count 2)
 
-(define ga-n-child-spawns (if ga-test 0 0))
+(define ga-n-child-spawns (if ga-test 1 0))
 
-(define ga-population-size (if ga-test 10 64))
-(define ga-training-set-size (if ga-test 1 10))
+(define ga-population-size (if ga-test 6 1000))
+(define ga-training-set-size (if ga-test 1 1))
 
 (define ga-combine-chance 0.5)
-(define ga-mutation-chance-minor 0.5)
+(define ga-mutation-chance-minor 0.6)
 (define ga-mutation-factor-minor 0.5)
-(define ga-mutation-chance-major 0.2)
-(define ga-mutation-factor-major 50.0)
+(define ga-mutation-chance-major 0.25)
+(define ga-mutation-factor-major 2.0)
 (define ga-max-moves 100)
 
 
 ;; The degree to which genomes with better scores are favoured for breeding (proportionate only)
 (define ga-factor-parent-best 0.5)
 
-;;(define ga-select-parents ga-select-parents-fitness-proportionate)
-(define ga-select-parents ga-select-parents-tournament)
+(define ga-select-parents ga-select-parents-fitness-proportionate)
+;;(define ga-select-parents ga-select-parents-tournament)
 
 (define ga-port (if ga-test 12346 12345))
 

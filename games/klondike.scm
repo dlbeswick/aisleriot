@@ -319,17 +319,35 @@
   )
 
 (define-class <nn-layer-input-klondike> (<nn-layer-input>)
+  (-promise-gamestate-nodes)
+  (-promise-movecards-nodes)
+  (-promise-deal-node)
   )
 
 ;;; Note: searching for nodes rather than holding references simplifies reconnecting networks after mutation.
 (define-method (nodes-gamestate-get (self <nn-layer-input-klondike>))
-  (filter (lambda (n) (string-contains (id-get n) "-gamestate-")) (nodes-get self)))
+  (unless (slot-bound? self '-promise-gamestate-nodes)
+		  (slot-set! self '-promise-gamestate-nodes
+					 (delay (filter (lambda (n) (string-contains (object->string (id-get n)) "-gamestate-"))
+									(nodes-get self)))))
+  (force (slot-ref self '-promise-gamestate-nodes))
+  )
+  
 
 (define-method (nodes-movecards-get (self <nn-layer-input-klondike>))
-  (filter (lambda (n) (string-contains (id-get n) "-movecards-")) (nodes-get self)))
+  (unless (slot-bound? self '-promise-movecards-nodes)
+		  (slot-set! self '-promise-movecards-nodes
+					 (delay (filter (lambda (n) (string-contains (object->string (id-get n)) "-movecards-"))
+									(nodes-get self)))))
+  (force (slot-ref self '-promise-movecards-nodes))
+  )
 
 (define-method (node-deal-get (self <nn-layer-input-klondike>))
-  (find (lambda (n) (equal? (id-get n) "input-deal")) (nodes-get self)))
+  (unless (slot-bound? self '-promise-deal-node)
+		  (slot-set! self '-promise-deal-node
+					 (delay (find (lambda (n) (equal? (id-get n) 'input-deal)) (nodes-get self)))))
+  (force (slot-ref self '-promise-deal-node))
+  )
 
 ;;; One group per slot with length, suit shown, value shown.
 ;;; One group of 11 move-cards test nodes.
@@ -338,14 +356,14 @@
   (append-map
    (lambda (slot)
 	 (map
-	  (lambda (i) (make <nn-node-input-real> #:id (format #f "input-gamestate-~a-~a" (id-get slot) i)))
+	  (lambda (i) (make <nn-node-input-real> #:id (string->symbol (format #f "input-gamestate-~a-~a" (id-get slot) i))))
 	  (iota 3))
 	 )
    (sort (slots-all game) (lambda (slot0 slot1) (>= (id-get slot0) (id-get slot1)))))
   )
 
 (define (nn-make-movecards-nodes)
-  (map (lambda (i) (make <nn-node-input-real> #:id (format #f "input-movecards-~a" i)))
+  (map (lambda (i) (make <nn-node-input-real> #:id (string->symbol (format #f "input-movecards-~a" i))))
 	   (iota (nn-encode-length-move-cards))
 	   )
   )
@@ -354,7 +372,7 @@
   (make <nn-layer-input-klondike>
 	#:nodes (append (nn-make-gamestate-nodes game)
 					(nn-make-movecards-nodes)
-					(list (make <nn-node-input-real> #:id "input-deal"))
+					(list (make <nn-node-input-real> #:id 'input-deal))
 					)
 	)
   )
@@ -656,13 +674,13 @@
 		 (lambda () #t)
 		 (lambda () #t)
 		 )
-		(ga-evolve (par-map
-					(lambda (n)
-					  (make <ga-genome> #:subject (randomize! (nn-network-klondike game))))
-					(iota ga-population-size))
-				   (iota ga-training-set-size)
-				   '()
-				   0))
+		(ga-evolve (lambda ()
+					 (make <ga-state>
+					   #:genomes (par-map
+								  (lambda (n)
+									(make <ga-genome> #:subject (randomize! (nn-network-klondike game))))
+								  (iota ga-population-size))
+					   #:seeds (iota ga-training-set-size)))))
 	)
   )
 

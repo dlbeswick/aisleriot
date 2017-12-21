@@ -1053,11 +1053,12 @@ static gboolean
 scm_execute_idle_function (SCM callback)
 {
   AisleriotGame *game = app_game;
-
+  gboolean result;
+  
   g_idle_remove_by_data(callback);
   game->idle_call_id = 0;
   
-  gboolean result = game_scm_call (callback, NULL, 0, NULL) == SCM_BOOL_T;
+  result = game_scm_call (callback, NULL, 0, NULL);
 
   scm_gc_unprotect_object (callback);
   

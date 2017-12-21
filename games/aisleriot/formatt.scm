@@ -24,12 +24,12 @@
 
 ;; formatt with pretty-printed args
 (define (formattpp . args)
-  (apply formatt (map pretty-string args))
+  (apply formatt (car args) (map pretty-string (cdr args)))
   )
 
 ;; Returns a string
 (define (formattpps . args)
-  (apply formatts (map pretty-string args))
+  (apply formatts (car args) (map pretty-string (cdr args)))
   )
 
 ;; Pretty-print to string

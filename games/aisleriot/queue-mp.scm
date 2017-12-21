@@ -1,8 +1,8 @@
 (define-module (aisleriot queue-mp)
-  #:use-module (aisleriot formatt)
+  #:use-module (ice-9 threads)
   #:use-module (oop goops)
-  #:use-module (srfi srfi-18)
   #:use-module (rnrs base)
+  #:use-module (aisleriot formatt)
   #:export (<queue-mp>
 
 			queue!
@@ -23,74 +23,88 @@
 
 ;; 'obj' must have not been supplied before.
 (define-method (queue! (queue <queue-mp>) obj)
-  (mutex-lock! (slot-ref queue '-mutex))
-  (assert (and (not (memq obj (slot-ref queue '-pending)))
-			   (not (memq obj (slot-ref queue '-processing)))
-			   ))
-  (slot-set! queue '-pending (append (slot-ref queue '-pending) (list obj)))
-  (mutex-unlock! (slot-ref queue '-mutex))
-  (condition-variable-broadcast! (slot-ref queue '-cond-change))
+  (with-mutex
+   (slot-ref queue '-mutex)
+   (assert (and (not (memq obj (slot-ref queue '-pending)))
+				(not (memq obj (slot-ref queue '-processing)))
+				))
+   (slot-set! queue '-pending (append (slot-ref queue '-pending) (list obj)))
+   )
+  (broadcast-condition-variable (slot-ref queue '-cond-change))
+  obj
   )
 
 ;; Can be called when item processing has failed and is recoverable.
 (define-method (requeue! (queue <queue-mp>) obj)
-  (mutex-lock! (slot-ref queue '-mutex))
-  (assert (and (not (memq obj (slot-ref queue '-pending)))
-			   (memq obj (slot-ref queue '-processing))
-			   ))
-  (slot-set! queue '-processing (delq obj (slot-ref queue '-processing)))
-  (slot-set! queue '-pending (append (slot-ref queue '-pending) (list obj)))
-  (mutex-unlock! (slot-ref queue '-mutex))
-  (condition-variable-broadcast! (slot-ref queue '-cond-change))
+  (with-mutex
+   (slot-ref queue '-mutex)
+   (assert (and (not (memq obj (slot-ref queue '-pending)))
+				(memq obj (slot-ref queue '-processing))
+				))
+   (slot-set! queue '-processing (delq obj (slot-ref queue '-processing)))
+   (slot-set! queue '-pending (append (slot-ref queue '-pending) (list obj)))
+   )
+  (broadcast-condition-variable (slot-ref queue '-cond-change))
+  obj
   )
 
 ;; Blocks until an item is available.
 (define-method (wait-next! (queue <queue-mp>))
-  (mutex-lock! (slot-ref queue '-mutex))
-  (if (null? (slot-ref queue '-pending))
-	  (begin
-		(mutex-unlock! (slot-ref queue '-mutex) (slot-ref queue '-cond-change))
-		(wait-next! queue))
-	  (let ((next (car (slot-ref queue '-pending))))
-		(slot-set! queue '-processing (append (slot-ref queue '-processing) (list next)))
-		(slot-set! queue '-pending (cdr (slot-ref queue '-pending)))
-		(mutex-unlock! (slot-ref queue '-mutex))
-		(condition-variable-broadcast! (slot-ref queue '-cond-change))
-		next
+  (let ((next
+		 (with-mutex
+		  (slot-ref queue '-mutex)
+		  (if (null? (slot-ref queue '-pending))
+			  (begin
+				(wait-condition-variable (slot-ref queue '-cond-change) (slot-ref queue '-mutex))
+				#nil)
+			  (begin
+				(let ((next (car (slot-ref queue '-pending))))
+				  (slot-set! queue '-processing (append (slot-ref queue '-processing) (list next)))
+				  (slot-set! queue '-pending (cdr (slot-ref queue '-pending)))
+				  next
+				  )
+				)
+			  )
+		  )))
+	(if next
+		(begin
+		  (broadcast-condition-variable (slot-ref queue '-cond-change))
+		  next
+		  )
+		(wait-next! queue)
 		)
-	  )
+	)
   )
 
 (define-method (complete! (queue <queue-mp>) obj)
-  (mutex-lock! (slot-ref queue '-mutex))
-  (assert (and (not (memq obj (slot-ref queue '-pending)))
-			   (memq obj (slot-ref queue '-processing))
-			   ))
-  (slot-set! queue '-processing (delq obj (slot-ref queue '-processing)))
-  (mutex-unlock! (slot-ref queue '-mutex))
-  (condition-variable-broadcast! (slot-ref queue '-cond-change))
+  (with-mutex
+   (slot-ref queue '-mutex)
+   (assert (and (not (memq obj (slot-ref queue '-pending)))
+				(memq obj (slot-ref queue '-processing))
+				))
+   (slot-set! queue '-processing (delq obj (slot-ref queue '-processing)))
+   )
+  (broadcast-condition-variable (slot-ref queue '-cond-change))
   )
 
 ;; Returns (n-pending n-processing)
 (define-method (lengths (queue <queue-mp>))
-  (mutex-lock! (slot-ref queue '-mutex))
-  (let ((result (list (length (slot-ref queue '-pending))
-					  (length (slot-ref queue '-processing)))))
-	(mutex-unlock! (slot-ref queue '-mutex))
-	result
-	)
+  (with-mutex
+   (slot-ref queue '-mutex)
+   (list (length (slot-ref queue '-pending))
+		 (length (slot-ref queue '-processing)))
+   )
   )
 
 ;; Blocks until queue is empty
 (define-method (drain (queue <queue-mp>))
-  (mutex-lock! (slot-ref queue '-mutex))
-  (if (and (null? (slot-ref queue '-pending)) (null? (slot-ref queue '-processing)))
-	  (begin
-		(mutex-unlock! (slot-ref queue '-mutex))
-		)
-	  (begin
-		(mutex-unlock! (slot-ref queue '-mutex) (slot-ref queue '-cond-change))
-		(drain queue)
-		)
-	  )
+  (unless (with-mutex
+		   (slot-ref queue '-mutex)
+		   (if (and (null? (slot-ref queue '-pending)) (null? (slot-ref queue '-processing)))
+			   #t
+			   (begin
+				 (wait-condition-variable (slot-ref queue '-cond-change) (slot-ref queue '-mutex))
+				 #f))
+		   )
+	  (drain queue))
   )

@@ -6,6 +6,7 @@
 			bitlist-factor-diff
 			bytevector->bitlist
 			double->bitlist
+			uint64->double
 			)
   )
 
@@ -35,11 +36,18 @@
 ;; Note: big-endian
 (define (double->bitlist double)
   (let ((bv (make-bytevector 8)))
-	(bytevector-ieee-double-set! bv 0 double (endianness big))
+	(bytevector-ieee-double-set! bv 0 (exact->inexact double) (endianness big))
 	(bytevector->bitlist bv)
 	)
   )
-	 
+
+(define (uint64->double u64)
+  (let ((bv (make-bytevector 8)))
+	(bytevector-u64-native-set! bv 0 u64)
+	(bytevector-ieee-double-native-ref bv 0)
+	)
+  )
+
 (define (bitlist-factor-diff bl0 bl1)
   (avg (map logxor bl0 bl1))
   )

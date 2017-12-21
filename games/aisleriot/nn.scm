@@ -1,5 +1,6 @@
 (define-module (aisleriot nn)
   #:use-module (ice-9 threads)
+  #:use-module (ice-9 weak-vector)
   #:use-module (srfi srfi-1)
   #:use-module (oop goops)
   #:use-module (rnrs base)
@@ -58,13 +59,8 @@
   (-value-cache-mutex #:init-thunk make-mutex)
   )
 
-(define-method (serialize (self <nn-network>))
-  (append (next-method)
-		(serialize-slots self
-						 '-layer-input
-						 '-layers-hidden
-						 '-layer-output
-						 ))
+(define-method (serialize-slots-get (self <nn-network>))
+  (append (next-method) '(-layer-input -layers-hidden -layer-output))
   )
 
 (define-method (cache-output-value! (self <nn-network>) cache-key value)
@@ -98,11 +94,13 @@
 (define-class <nn-link> (<serializable>)
   (-node-source-id #:init-keyword #:node-source-id)
   (-weight #:init-value 1.0 #:init-keyword #:weight) ; <real>
-  (-cache-node-source #:init-value #nil)
+  (-cache-node-source #:init-form (weak-vector #nil))
   )
 
-(define-method (serialize (self <nn-link>))
-  (append (next-method) (serialize-slots self '-node-source-id '-weight)))
+
+(define-method (serialize-slots-get (self <nn-link>))
+  (append (next-method) '(-node-source-id -weight))
+  )
 
 (define-method (inspect (self <nn-link>))
   (formattpps
@@ -111,16 +109,19 @@
    (slot-ref self '-weight))
   )
 
+(define uint64-max (ash 1 64))
+
 (define-method (randomize! (self <nn-link>))
-  (slot-set! self '-weight (+ -1.0 (random 2.0))))
+;  (slot-set! self '-weight (let f () (let ((result (uint64->double (random uint64-max)))) (or (and (finite? result) result) (f)))))
+  (slot-set! self '-weight (+ -1000000.0 (random 2000000.0))))
 
 (define-method (node-source-get (self <nn-link>) (network <nn-network>))
-  (or (slot-ref self '-cache-node-source)
+;  (or (weak-vector-ref (slot-ref self '-cache-node-source) 0)
 	  (let ((result (node-by-id network (slot-ref self '-node-source-id))))
-		(slot-set! self '-cache-node-source result)
+;		(weak-vector-set! (slot-ref self '-cache-node-source) 0 result)
 		result
 		)
-	  )
+;	  )
   )
 
 (define-method (contribution (self <nn-link>) (network <nn-network>))
@@ -132,8 +133,9 @@
   (-id #:init-keyword #:id #:getter id-get)
   )
 
-(define-method (serialize (self <nn-node>))
-  (append (next-method) (serialize-slots self '-id)))
+(define-method (serialize-slots-get (self <nn-node>))
+  (append (next-method) '(-id))
+  )
 
 (define-method (inspect (self <nn-node>) (network <nn-network>))
   (formattpps
@@ -150,8 +152,9 @@
   (-links-in #:init-keyword #:links-in #:getter links-in-get #:setter links-in-set!) ; <list <nn-link>>
   )
 
-(define-method (serialize (self <nn-node-consumer>))
-  (append (next-method) (serialize-slots self '-links-in)))
+(define-method (serialize-slots-get (self <nn-node-consumer>))
+  (append (next-method) '(-links-in))
+  )
 
 (define-method (-display (self <nn-node-consumer>) (network <nn-network>))
   (formattpps
@@ -204,8 +207,9 @@
   (-nodes #:init-keyword #:nodes #:getter nodes-get)
   )
 
-(define-method (serialize (self <nn-layer>))
-  (append (next-method) (serialize-slots self '-nodes)))
+(define-method (serialize-slots-get (self <nn-layer>))
+  (append (next-method) '(-nodes))
+  )
 
 (define-method (clear! (self <nn-layer>))
   (for-each (lambda (n) (clear! n)) (nodes-get self)))
@@ -269,7 +273,7 @@
 					#:nodes (let make-nodes ((out '()) (i nhiddennodes))
 							  (if (= 0 i) out
 								  (make-nodes (cons (make <nn-node-consumer>
-													  #:id (format #f "h~a~a" il i)
+													  #:id (string->symbol (format #f "h~a~a" il i))
 													  #:links-in '())
 													out)
 											  (1- i))
