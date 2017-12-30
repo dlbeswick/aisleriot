@@ -1,6 +1,5 @@
 (define-module (aisleriot nn)
   #:use-module (ice-9 threads)
-  #:use-module (ice-9 weak-vector)
   #:use-module (srfi srfi-1)
   #:use-module (oop goops)
   #:use-module (rnrs base)
@@ -94,7 +93,7 @@
 (define-class <nn-link> (<serializable>)
   (-node-source-id #:init-keyword #:node-source-id)
   (-weight #:init-value 1.0 #:init-keyword #:weight) ; <real>
-  (-cache-node-source #:init-form (weak-vector #nil))
+  (-cache-node-source #:init-value #nil)
   )
 
 
@@ -116,12 +115,13 @@
   (slot-set! self '-weight (+ -1000000.0 (random 2000000.0))))
 
 (define-method (node-source-get (self <nn-link>) (network <nn-network>))
-;  (or (weak-vector-ref (slot-ref self '-cache-node-source) 0)
-	  (let ((result (node-by-id network (slot-ref self '-node-source-id))))
-;		(weak-vector-set! (slot-ref self '-cache-node-source) 0 result)
+  (let ((result (slot-ref self '-cache-node-source)))
+	(if result
 		result
-		)
-;	  )
+		(let ((result (node-by-id network (slot-ref self '-node-source-id))))
+		  (slot-set! self '-cache-node-source result)
+		  result))
+	)
   )
 
 (define-method (contribution (self <nn-link>) (network <nn-network>))
@@ -253,6 +253,7 @@
 (define-method (layers-all-get (self <nn-network>))
   (append (list (layer-input-get self)) (layers-hidden-get self) (list (layer-output-get self))))
 
+;; Returns the input network
 (define-method (fully-connect! (self <nn-network>))
   (let connect ((li (layers-all-get self)))
 	(cond ((null? (cdr li)) self)

@@ -231,29 +231,27 @@
   )
 
 (define-method (mutation-factor (genome <ga-genome>))
-  0.0
-  ;; (assert (not (null? (parents-get genome))))
-  ;; (let ((result (slot-ref genome '-cache-mutation-factor)))
-  ;; 	(if result result
-  ;; 		(let ((result (mutation-factor (car (parents-get genome))
-  ;; 									   (cadr (parents-get genome))
-  ;; 									   genome)))
-  ;; 		  (slot-set! genome '-cache-mutation-factor result)
-  ;; 		  result
-  ;; 		  ))
-  ;; 	)
+  (assert (not (null? (parents-get genome))))
+  (let ((result (slot-ref genome '-cache-mutation-factor)))
+  	(if result result
+  		(let ((result (mutation-factor (car (parents-get genome))
+  									   (cadr (parents-get genome))
+  									   genome)))
+  		  (slot-set! genome '-cache-mutation-factor result)
+  		  result
+  		  ))
+  	)
   )
 
 (define-method (cleanup! (genome <ga-genome>))
   (slot-set! genome '-parents 'cleaned)
-;  (unless (elite? genome) (slot-set! genome '-subject 'cleaned))
   )
 
 ;; GA methods
 
 (define-method (ga-combine (genome0 <ga-genome>) (genome1 <ga-genome>))
   (let ((result (make <ga-genome> #:subject (ga-combine (subject-get genome0) (subject-get genome1))
-)));					  #:parents (list genome0 genome1))))
+					  #:parents (list genome0 genome1))))
 	;; Give the genome the last name of its best parent. If it was mutated, give it a new last name.
 	(if (= 0 (mutation-factor result))
 		(name-last-set! result (name-last-get genome0)))
@@ -330,7 +328,7 @@
   (avg (map mutation-factor (nodes-get p0) (nodes-get p1) (nodes-get c)))
   )
 
-;;; Get a normalized value describing the degree to which network c differs from either of its parents p0 and p1.
+;;; Get a normalized value expressing the degree to which network c differs from either of its parents p0 and p1.
 (define-method (mutation-factor (p0 <nn-network>) (p1 <nn-network>) (c <nn-network>))
   (avg (map mutation-factor (layers-all-get p0) (layers-all-get p1) (layers-all-get c)))
   )
@@ -357,14 +355,15 @@
 (define-method (ga-combine (node0 <nn-node>) (node1 <nn-node>))
   (assert (equal? (id-get node0) (id-get node1)))
   (assert (equal? (class-of node0) (class-of node1)))
-  (make (class-of node0)
-	#:id (id-get node0))
+  (make (class-of node0) #:id (id-get node0))
   )
 
 (define-method (ga-combine (node0 <nn-node-consumer>) (node1 <nn-node-consumer>))
   (let ((node (next-method)))
 	(slot-set! node '-links-in (map ga-combine (links-in-get node0) (links-in-get node1)))
-	node))
+	node
+	)
+  )
 
 (define-method (ga-combine (layer0 <nn-layer>) (layer1 <nn-layer>))
   (assert (equal? (class-of layer0) (class-of layer1)))
@@ -589,7 +588,7 @@
 			 )
 			))
 
-;	  (unless (first? state) (for-each cleanup! (genomes-get state)))
+	  (unless (first? state) (for-each cleanup! (genomes-get state)))
 	  (formatt "Waiting to finish processing ~a runs\n" (apply + (lengths queue-runs)))
 	  (let ((thread-write-state
 			 (begin-thread
@@ -659,13 +658,17 @@
 
 (define (child-spawn port i)
   (formatt "Spawning child ~a\n" i)
-  (let f ((pipe (open-pipe* OPEN_READ cmd "--automate" "--host" (format #f "127.0.0.1:~a"  port))))
-	(let ((t (get-line pipe)))
-	  (formatt "CHILD ~a: ~a\n" i (car t))
-	  (if (eof-object? (cdr t)) (break)))
-	(f)
+  (let ((pipe (open-pipe* OPEN_READ cmd "--automate" "--host" (format #f "127.0.0.1:~a"  port))))
+	(formatt "Opened pipe ~a\n" i)
+	(setvbuf pipe 'line)
+	(let f ()
+	  (let ((t (get-line pipe)))
+		(formatt "CHILD ~a: ~a\n" i t)
+		(unless (eof-object? t) (f))
+		)
+	  )
 	)
-  (formatt "Child ~a died\n" port)
+  (formatt "Child ~a died\n" i)
   )
 
 (define (server-worker-connection sock local-env)
@@ -696,7 +699,7 @@
 					   (cond ((number? deserialized)
 							  (on-complete run deserialized)
 							  (complete! queue-runs run)
-							  (server-worker-connection sock local-env))
+							  )
 							 ;; Receipt of #t is a keepalive signal
 							 ((boolean? deserialized) (formatt "~a: keepalive\n" (inspect run)) (keepalive))
 							 (else (throw 'ga-error "Expected number or bool, got" deserialized)))
@@ -713,6 +716,8 @@
 	   )
 	 )
 	)
+
+  (server-worker-connection sock local-env)
   )
 
 (define (aisleriot-server nchildren local-env)
@@ -851,7 +856,7 @@
 
 (define ga-elite-preserve-count 2)
 
-(define ga-n-child-spawns (if ga-test 1 0))
+(define ga-n-child-spawns (if ga-test 3 0))
 
 (define ga-population-size (if ga-test 6 1000))
 (define ga-training-set-size (if ga-test 1 1))
